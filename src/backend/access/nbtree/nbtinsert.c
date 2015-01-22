@@ -945,7 +945,7 @@ _bt_prefixKeyCompress(Relation rel, IndexTuple lowItem, IndexTuple highItem)
    * it is a struct with two fields: vl_len, which is the length, and vl_dat,
    * which is a pointer to a C string. The length of vl_dat is accessible
    * through the macro VARSIZE_ANY_EXHDR. You can change the value of vl_len
-   * using SET_VARSIZE_SHORT. Note that vl_len is the length of the whole text struct, 
+   * using SET_VARSIZE_SHORT. Note that vl_len is the length of the whole text struct,
    * including the header, which is 1 byte.
    */
   text *lowText;
@@ -955,8 +955,8 @@ _bt_prefixKeyCompress(Relation rel, IndexTuple lowItem, IndexTuple highItem)
   char *highp, *lowp;
 
   /* ANY VARIABLES YOU DEFINE SHOULD BE DECLARED HERE */
-
-
+  int highLength, lowLength;
+  int keyLength;
 
   char errbuf[8192]; /* space for formatting elog debugging messages */
 
@@ -980,7 +980,7 @@ _bt_prefixKeyCompress(Relation rel, IndexTuple lowItem, IndexTuple highItem)
 
     /* and get the C string (i.e. (char *)) out of the text structs */
     highp = VARDATA_ANY(highText);
-    lowp = VARDATA_ANY(lowText); 
+    lowp = VARDATA_ANY(lowText);
 
     /*
      * Now, given lowp and highp as C strings, figure out where to truncate
@@ -995,21 +995,19 @@ _bt_prefixKeyCompress(Relation rel, IndexTuple lowItem, IndexTuple highItem)
      * of highText->vl_len in the toReturn variable.
      */
 
-    /*
-     * We're initializing toReturn to 0 so that the code will run
-     * without your solution. You will need to set toReturn appropriately.
-     */
-    toReturn = 0;
+    i = 0;
+    highLength = VARSIZE_ANY_EXHDR(highText);
+    lowLength = VARSIZE_ANY_EXHDR(lowText);
 
-    /* YOUR SOLUTION HERE */
-      /*
-     * Here is some sample code using the postgres debug reporting facility
-     * to see if things are working.  You might want to append more text to this
-     * errbuf array to output the input versions of lowText and highText,
-     * in addition to the output version.  Note that sprintf returns the number
-     * of characters printed, which can help you position your next sprintf
-     * to the right place in the errbuf buffer.
-     */
+    while (i < lowLength && i < highLength && lowp[i] == highp[i]) {
+      i++;
+    }
+
+    keyLength = i + 1;
+
+    SET_VARSIZE_SHORT(highText, keyLength + sizeof(char));
+
+    toReturn = highLength - keyLength;
 
     /*
      * CS448 STUDENTS: DO NOT CHANGE THE 3 LINES FOLLOWING THIS COMMENT.  THEY
@@ -1022,6 +1020,13 @@ _bt_prefixKeyCompress(Relation rel, IndexTuple lowItem, IndexTuple highItem)
 
 
     /* ADD YOUR OWN DEBUG MESSAGES HERE AS YOU SEE FIT */
+    pos += sprintf(&(errbuf[pos]), " L: ");
+    for (i=0; i < VARSIZE_ANY_EXHDR(lowText); i++)
+          sprintf(&(errbuf[pos++]), "%c", VARDATA_ANY(lowText)[i]);
+
+    pos += sprintf(&(errbuf[pos]), " R: ");
+    for (i=0; i < highLength; i++)
+          sprintf(&(errbuf[pos++]), "%c", VARDATA_ANY(highText)[i]);
 
     errbuf[pos] = '\0';
     elog(DEBUG1, "%s\n", errbuf);
