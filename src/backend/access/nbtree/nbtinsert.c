@@ -1020,13 +1020,6 @@ _bt_prefixKeyCompress(Relation rel, IndexTuple lowItem, IndexTuple highItem)
 
 
     /* ADD YOUR OWN DEBUG MESSAGES HERE AS YOU SEE FIT */
-    pos += sprintf(&(errbuf[pos]), " L: ");
-    for (i=0; i < VARSIZE_ANY_EXHDR(lowText); i++)
-          sprintf(&(errbuf[pos++]), "%c", VARDATA_ANY(lowText)[i]);
-
-    pos += sprintf(&(errbuf[pos]), " R: ");
-    for (i=0; i < highLength; i++)
-          sprintf(&(errbuf[pos++]), "%c", VARDATA_ANY(highText)[i]);
 
     errbuf[pos] = '\0';
     elog(DEBUG1, "%s\n", errbuf);
