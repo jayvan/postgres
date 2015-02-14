@@ -38,7 +38,6 @@
 #include "utils/syscache.h"
 
 
-static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
 static void ExecHashBuildSkewHash(HashJoinTable hashtable, Hash *node,
 					  int mcvsToUse);
 static void ExecHashSkewTableInsert(HashJoinTable hashtable,
@@ -466,35 +465,15 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 	/* also ensure we avoid integer overflow in nbatch and nbuckets */
 	max_pointers = Min(max_pointers, INT_MAX / 2);
 
-	if (inner_rel_bytes > hash_table_bytes)
-	{
-		/* We'll need multiple batches */
-		long		lbuckets;
-		double		dbatch;
-		int			minbatch;
+  // CS448: Removed case where hash table doesn't fit in memory
+  /* We expect the hashtable to fit in memory */
+  double		dbuckets;
 
-		lbuckets = (hash_table_bytes / tupsize) / NTUP_PER_BUCKET;
-		lbuckets = Min(lbuckets, max_pointers);
-		nbuckets = (int) lbuckets;
+  dbuckets = ceil(ntuples / NTUP_PER_BUCKET);
+  dbuckets = Min(dbuckets, max_pointers);
+  nbuckets = (int) dbuckets;
 
-		dbatch = ceil(inner_rel_bytes / hash_table_bytes);
-		dbatch = Min(dbatch, max_pointers);
-		minbatch = (int) dbatch;
-		nbatch = 2;
-		while (nbatch < minbatch)
-			nbatch <<= 1;
-	}
-	else
-	{
-		/* We expect the hashtable to fit in memory */
-		double		dbuckets;
-
-		dbuckets = ceil(ntuples / NTUP_PER_BUCKET);
-		dbuckets = Min(dbuckets, max_pointers);
-		nbuckets = (int) dbuckets;
-
-		nbatch = 1;
-	}
+  nbatch = 1;
 
 	/*
 	 * Both nbuckets and nbatch must be powers of 2 to make
@@ -545,141 +524,7 @@ ExecHashTableDestroy(HashJoinTable hashtable)
 	pfree(hashtable);
 }
 
-/*
- * ExecHashIncreaseNumBatches
- *		increase the original number of batches in order to reduce
- *		current memory consumption
- */
-static void
-ExecHashIncreaseNumBatches(HashJoinTable hashtable)
-{
-	int			oldnbatch = hashtable->nbatch;
-	int			curbatch = hashtable->curbatch;
-	int			nbatch;
-	int			i;
-	MemoryContext oldcxt;
-	long		ninmemory;
-	long		nfreed;
-
-	/* do nothing if we've decided to shut off growth */
-	if (!hashtable->growEnabled)
-		return;
-
-	/* safety check to avoid overflow */
-	if (oldnbatch > Min(INT_MAX / 2, MaxAllocSize / (sizeof(void *) * 2)))
-		return;
-
-	nbatch = oldnbatch * 2;
-	Assert(nbatch > 1);
-
-#ifdef HJDEBUG
-	printf("Increasing nbatch to %d because space = %lu\n",
-		   nbatch, (unsigned long) hashtable->spaceUsed);
-#endif
-
-	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
-
-	if (hashtable->innerBatchFile == NULL)
-	{
-		/* we had no file arrays before */
-		hashtable->innerBatchFile = (BufFile **)
-			palloc0(nbatch * sizeof(BufFile *));
-		hashtable->outerBatchFile = (BufFile **)
-			palloc0(nbatch * sizeof(BufFile *));
-		/* time to establish the temp tablespaces, too */
-		PrepareTempTablespaces();
-	}
-	else
-	{
-		/* enlarge arrays and zero out added entries */
-		hashtable->innerBatchFile = (BufFile **)
-			repalloc(hashtable->innerBatchFile, nbatch * sizeof(BufFile *));
-		hashtable->outerBatchFile = (BufFile **)
-			repalloc(hashtable->outerBatchFile, nbatch * sizeof(BufFile *));
-		MemSet(hashtable->innerBatchFile + oldnbatch, 0,
-			   (nbatch - oldnbatch) * sizeof(BufFile *));
-		MemSet(hashtable->outerBatchFile + oldnbatch, 0,
-			   (nbatch - oldnbatch) * sizeof(BufFile *));
-	}
-
-	MemoryContextSwitchTo(oldcxt);
-
-	hashtable->nbatch = nbatch;
-
-	/*
-	 * Scan through the existing hash table entries and dump out any that are
-	 * no longer of the current batch.
-	 */
-	ninmemory = nfreed = 0;
-
-	for (i = 0; i < hashtable->nbuckets; i++)
-	{
-		HashJoinTuple prevtuple;
-		HashJoinTuple tuple;
-
-		prevtuple = NULL;
-		tuple = hashtable->buckets[i];
-
-		while (tuple != NULL)
-		{
-			/* save link in case we delete */
-			HashJoinTuple nexttuple = tuple->next;
-			int			bucketno;
-			int			batchno;
-
-			ninmemory++;
-			ExecHashGetBucketAndBatch(hashtable, tuple->hashvalue,
-									  &bucketno, &batchno);
-			Assert(bucketno == i);
-			if (batchno == curbatch)
-			{
-				/* keep tuple */
-				prevtuple = tuple;
-			}
-			else
-			{
-				/* dump it out */
-				Assert(batchno > curbatch);
-				ExecHashJoinSaveTuple(HJTUPLE_MINTUPLE(tuple),
-									  tuple->hashvalue,
-									  &hashtable->innerBatchFile[batchno]);
-				/* and remove from hash table */
-				if (prevtuple)
-					prevtuple->next = nexttuple;
-				else
-					hashtable->buckets[i] = nexttuple;
-				/* prevtuple doesn't change */
-				hashtable->spaceUsed -=
-					HJTUPLE_OVERHEAD + HJTUPLE_MINTUPLE(tuple)->t_len;
-				pfree(tuple);
-				nfreed++;
-			}
-
-			tuple = nexttuple;
-		}
-	}
-
-#ifdef HJDEBUG
-	printf("Freed %ld of %ld tuples, space now %lu\n",
-		   nfreed, ninmemory, (unsigned long) hashtable->spaceUsed);
-#endif
-
-	/*
-	 * If we dumped out either all or none of the tuples in the table, disable
-	 * further expansion of nbatch.  This situation implies that we have
-	 * enough tuples of identical hashvalues to overflow spaceAllowed.
-	 * Increasing nbatch will not fix it since there's no way to subdivide the
-	 * group any more finely. We have to just gut it out and hope the server
-	 * has enough RAM.
-	 */
-	if (nfreed == 0 || nfreed == ninmemory)
-	{
-		hashtable->growEnabled = false;
-#ifdef HJDEBUG
-		printf("Disabling further increase of nbatch\n");
-#endif
-	}
-}
+// CS448: Removed ExecHashIncreaseNumBatches
 
 /*
  * ExecHashTableInsert
@@ -738,8 +583,6 @@ ExecHashTableInsert(HashJoinTable hashtable,
 		hashtable->spaceUsed += hashTupleSize;
 		if (hashtable->spaceUsed > hashtable->spacePeak)
 			hashtable->spacePeak = hashtable->spaceUsed;
-		if (hashtable->spaceUsed > hashtable->spaceAllowed)
-			ExecHashIncreaseNumBatches(hashtable);
 	}
 	else
 	{
@@ -1355,10 +1198,6 @@ ExecHashSkewTableInsert(HashJoinTable hashtable,
 		hashtable->spacePeak = hashtable->spaceUsed;
 	while (hashtable->spaceUsedSkew > hashtable->spaceAllowedSkew)
 		ExecHashRemoveNextSkewBucket(hashtable);
-
-	/* Check we are not over the total spaceAllowed, either */
-	if (hashtable->spaceUsed > hashtable->spaceAllowed)
-		ExecHashIncreaseNumBatches(hashtable);
 }
 
 /*
