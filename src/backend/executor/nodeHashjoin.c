@@ -232,8 +232,8 @@ ExecHashJoin(HashJoinState *node)
 				 * hash table or skew hash table.
 				 */
 				node->hj_CurHashValue = hashvalue;
-				ExecHashGetBucketAndBatch(hashtable, hashvalue,
-										  &node->hj_CurBucketNo, &batchno);
+				ExecHashGetBucket(hashtable, hashvalue,
+										  &node->hj_CurBucketNo);
 				node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(hashtable,
 																 hashvalue);
 				node->hj_CurTuple = NULL;

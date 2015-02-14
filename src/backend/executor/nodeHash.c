@@ -392,7 +392,6 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 						int *num_skew_mcvs)
 {
 	int			tupsize;
-	double		inner_rel_bytes;
 	long		hash_table_bytes;
 	long		skew_table_bytes;
 	long		max_pointers;
@@ -412,7 +411,6 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 	tupsize = HJTUPLE_OVERHEAD +
 		MAXALIGN(sizeof(MinimalTupleData)) +
 		MAXALIGN(tupwidth);
-	inner_rel_bytes = ntuples * tupsize;
 
 	/*
 	 * Target in-memory hashtable size is work_mem kilobytes.
@@ -477,7 +475,7 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 
 	/*
 	 * Both nbuckets and nbatch must be powers of 2 to make
-	 * ExecHashGetBucketAndBatch fast.	We already fixed nbatch; now inflate
+	 * ExecHashGetBucket fast.	We already fixed nbatch; now inflate
 	 * nbuckets to the next larger power of 2.	We also force nbuckets to not
 	 * be real small, by starting the search at 2^10.  (Note: above we made
 	 * sure that nbuckets is not more than INT_MAX / 2, so this loop cannot
@@ -546,8 +544,7 @@ ExecHashTableInsert(HashJoinTable hashtable,
 	int			bucketno;
 	int			batchno;
 
-	ExecHashGetBucketAndBatch(hashtable, hashvalue,
-							  &bucketno, &batchno);
+	ExecHashGetBucket(hashtable, hashvalue, &bucketno);
 
 	/*
 	 * decide whether to put the tuple in the hash table or a temp file
@@ -691,8 +688,8 @@ ExecHashGetHashValue(HashJoinTable hashtable,
 }
 
 /*
- * ExecHashGetBucketAndBatch
- *		Determine the bucket number and batch number for a hash value
+ * ExecHashGetBucket
+ *		Determine the bucket number for a hash value
  *
  * Note: on-the-fly increases of nbatch must not change the bucket number
  * for a given hash code (since we don't move tuples to different hash
@@ -711,25 +708,14 @@ ExecHashGetHashValue(HashJoinTable hashtable,
  * effectively adds one more bit to the top of the batchno.
  */
 void
-ExecHashGetBucketAndBatch(HashJoinTable hashtable,
+ExecHashGetBucket(HashJoinTable hashtable,
 						  uint32 hashvalue,
-						  int *bucketno,
-						  int *batchno)
+						  int *bucketno)
+
 {
 	uint32		nbuckets = (uint32) hashtable->nbuckets;
-	uint32		nbatch = (uint32) hashtable->nbatch;
 
-	if (nbatch > 1)
-	{
-		/* we can do MOD by masking, DIV by shifting */
-		*bucketno = hashvalue & (nbuckets - 1);
-		*batchno = (hashvalue >> hashtable->log2_nbuckets) & (nbatch - 1);
-	}
-	else
-	{
-		*bucketno = hashvalue & (nbuckets - 1);
-		*batchno = 0;
-	}
+  *bucketno = hashvalue & (nbuckets - 1);
 }
 
 /*
@@ -1227,7 +1213,7 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 	 * we are processing the tuples.
 	 */
 	hashvalue = bucket->hashvalue;
-	ExecHashGetBucketAndBatch(hashtable, hashvalue, &bucketno, &batchno);
+	ExecHashGetBucket(hashtable, hashvalue, &bucketno);
 
 	/* Process all tuples in the bucket */
 	hashTuple = bucket->tuples;
