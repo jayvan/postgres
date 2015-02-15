@@ -27,7 +27,7 @@
 /*
  * States of the ExecHashJoin state machine
  */
-#define HJ_BUILD_HASHTABLE		1
+#define HJ_BUILD_HASHTABLES		1
 #define HJ_NEED_NEW_OUTER		2
 #define HJ_SCAN_BUCKET			3
 #define HJ_FILL_OUTER_TUPLE		4
@@ -106,7 +106,7 @@ ExecHashJoin(HashJoinState *node)
 	{
 		switch (node->hj_JoinState)
 		{
-			case HJ_BUILD_HASHTABLE:
+			case HJ_BUILD_HASHTABLES:
 
 				/*
 				 * First time through: build hash table for inner relation.
@@ -228,8 +228,7 @@ ExecHashJoin(HashJoinState *node)
 				node->hj_CurHashValue = hashvalue;
 				ExecHashGetBucket(hashtable, hashvalue,
 										  &node->hj_CurBucketNo);
-				node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(hashtable,
-																 hashvalue);
+				node->hj_CurSkewBucketNo = INVALID_SKEW_BUCKET_NO;
 				node->hj_CurTuple = NULL;
 
 
@@ -558,7 +557,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	((HashState *) innerPlanState(hjstate))->hashkeys = rclauses;
 
 	hjstate->js.ps.ps_TupFromTlist = false;
-	hjstate->hj_JoinState = HJ_BUILD_HASHTABLE;
+	hjstate->hj_JoinState = HJ_BUILD_HASHTABLES;
 	hjstate->hj_MatchedOuter = false;
 	hjstate->hj_OuterNotEmpty = false;
 

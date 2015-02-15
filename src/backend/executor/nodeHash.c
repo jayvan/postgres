@@ -14,7 +14,6 @@
  */
 /*
  * INTERFACE ROUTINES
- *		MultiExecHash	- generate an in-memory hash table of the relation
  *		ExecInitHash	- initialize node and subnodes
  *		ExecEndHash		- shutdown node and subnodes
  */
@@ -38,15 +37,6 @@
 #include "utils/syscache.h"
 
 
-static void ExecHashBuildSkewHash(HashJoinTable hashtable, Hash *node,
-					  int mcvsToUse);
-static void ExecHashSkewTableInsert(HashJoinTable hashtable,
-						TupleTableSlot *slot,
-						uint32 hashvalue,
-						int bucketNumber);
-static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
-
-
 /* ----------------------------------------------------------------
  *		ExecHash
  *
@@ -56,8 +46,57 @@ static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
 TupleTableSlot *
 ExecHash(HashState *node)
 {
-	elog(ERROR, "Hash node does not support ExecProcNode call convention");
-	return NULL;
+	PlanState  *outerNode;
+	List	   *hashkeys;
+	HashJoinTable hashtable;
+	TupleTableSlot *slot;
+	ExprContext *econtext;
+	uint32		hashvalue;
+
+	/* must provide our own instrumentation support */
+	if (node->ps.instrument)
+		InstrStartNode(node->ps.instrument);
+
+	/*
+	 * get state info from node
+	 */
+	outerNode = outerPlanState(node);
+	hashtable = node->hashtable;
+
+	/*
+	 * set expression context
+	 */
+	hashkeys = node->hashkeys;
+	econtext = node->ps.ps_ExprContext;
+
+  slot = ExecProcNode(outerNode);
+  if (!TupIsNull(slot)) {
+    /* We have to compute the hash value */
+    econtext->ecxt_innertuple = slot;
+    if (ExecHashGetHashValue(hashtable, econtext, hashkeys,
+                 false, hashtable->keepNulls,
+                 &hashvalue))
+    {
+      ExecHashTableInsert(hashtable, slot, hashvalue);
+      hashtable->totalTuples += 1;
+    }
+  }
+
+	/* must provide our own instrumentation support */
+	if (node->ps.instrument)
+		InstrStopNode(node->ps.instrument, hashtable->totalTuples);
+
+	/*
+	 * We do not return the hash table directly because it's not a subtype of
+	 * Node, and so would violate the MultiExecProcNode API.  Instead, our
+	 * parent Hashjoin node is expected to know how to fish it out of our node
+	 * state.  Ugly but not really worth cleaning up, since Hashjoin knows
+	 * quite a bit more about Hash besides that.
+	 */
+  if (TupIsNull(slot))
+    return NULL;
+  else
+    return slot;
 }
 
 /* ----------------------------------------------------------------
@@ -107,20 +146,7 @@ MultiExecHash(HashState *node)
 								 false, hashtable->keepNulls,
 								 &hashvalue))
 		{
-			int			bucketNumber;
-
-			bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
-			if (bucketNumber != INVALID_SKEW_BUCKET_NO)
-			{
-				/* It's a skew tuple, so put it into that hash table */
-				ExecHashSkewTableInsert(hashtable, slot, hashvalue,
-										bucketNumber);
-			}
-			else
-			{
-				/* Not subject to skew optimization, so insert normally */
-				ExecHashTableInsert(hashtable, slot, hashvalue);
-			}
+      ExecHashTableInsert(hashtable, slot, hashvalue);
 			hashtable->totalTuples += 1;
 		}
 	}
@@ -364,9 +390,6 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 						int *numbatches,
 						int *num_skew_mcvs)
 {
-	int			tupsize;
-	long		hash_table_bytes;
-	long		skew_table_bytes;
 	long		max_pointers;
 	int			nbuckets;
 	int			i;
@@ -375,55 +398,8 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 	if (ntuples <= 0.0)
 		ntuples = 1000.0;
 
-	/*
-	 * Estimate tupsize based on footprint of tuple in hashtable... note this
-	 * does not allow for any palloc overhead.	The manipulations of spaceUsed
-	 * don't count palloc overhead either.
-	 */
-	tupsize = HJTUPLE_OVERHEAD +
-		MAXALIGN(sizeof(MinimalTupleData)) +
-		MAXALIGN(tupwidth);
 
-	/*
-	 * Target in-memory hashtable size is work_mem kilobytes.
-	 */
-	hash_table_bytes = work_mem * 1024L;
-
-	/*
-	 * If skew optimization is possible, estimate the number of skew buckets
-	 * that will fit in the memory allowed, and decrement the assumed space
-	 * available for the main hash table accordingly.
-	 *
-	 * We make the optimistic assumption that each skew bucket will contain
-	 * one inner-relation tuple.  If that turns out to be low, we will recover
-	 * at runtime by reducing the number of skew buckets.
-	 *
-	 * hashtable->skewBucket will have up to 8 times as many HashSkewBucket
-	 * pointers as the number of MCVs we allow, since ExecHashBuildSkewHash
-	 * will round up to the next power of 2 and then multiply by 4 to reduce
-	 * collisions.
-	 */
-	if (useskew)
-	{
-		skew_table_bytes = hash_table_bytes * SKEW_WORK_MEM_PERCENT / 100;
-
-		/*----------
-		 * Divisor is:
-		 * size of a hash tuple +
-		 * worst-case size of skewBucket[] per MCV +
-		 * size of skewBucketNums[] entry +
-		 * size of skew bucket struct itself
-		 *----------
-		 */
-		*num_skew_mcvs = skew_table_bytes / (tupsize +
-											 (8 * sizeof(HashSkewBucket *)) +
-											 sizeof(int) +
-											 SKEW_BUCKET_OVERHEAD);
-		if (*num_skew_mcvs > 0)
-			hash_table_bytes -= skew_table_bytes;
-	}
-	else
-		*num_skew_mcvs = 0;
+  *num_skew_mcvs = 0;
 
 	/*
 	 * Set nbuckets to achieve an average bucket load of NTUP_PER_BUCKET when
@@ -687,8 +663,6 @@ ExecScanHashBucket(HashJoinState *hjstate,
 	 */
 	if (hashTuple != NULL)
 		hashTuple = hashTuple->next;
-	else if (hjstate->hj_CurSkewBucketNo != INVALID_SKEW_BUCKET_NO)
-		hashTuple = hashtable->skewBucket[hjstate->hj_CurSkewBucketNo]->tuples;
 	else
 		hashTuple = hashtable->buckets[hjstate->hj_CurBucketNo];
 
@@ -856,16 +830,6 @@ ExecHashTableResetMatchFlags(HashJoinTable hashtable)
 		for (tuple = hashtable->buckets[i]; tuple != NULL; tuple = tuple->next)
 			HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(tuple));
 	}
-
-	/* ... and the same for the skew buckets, if any */
-	for (i = 0; i < hashtable->nSkewBuckets; i++)
-	{
-		int			j = hashtable->skewBucketNums[i];
-		HashSkewBucket *skewBucket = hashtable->skewBucket[j];
-
-		for (tuple = skewBucket->tuples; tuple != NULL; tuple = tuple->next)
-			HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(tuple));
-	}
 }
 
 
@@ -881,337 +845,7 @@ ExecReScanHash(HashState *node)
 }
 
 
-/*
- * ExecHashBuildSkewHash
- *
- *		Set up for skew optimization if we can identify the most common values
- *		(MCVs) of the outer relation's join key.  We make a skew hash bucket
- *		for the hash value of each MCV, up to the number of slots allowed
- *		based on available memory.
- */
-static void
-ExecHashBuildSkewHash(HashJoinTable hashtable, Hash *node, int mcvsToUse)
-{
-	HeapTupleData *statsTuple;
-	Datum	   *values;
-	int			nvalues;
-	float4	   *numbers;
-	int			nnumbers;
-
-	/* Do nothing if planner didn't identify the outer relation's join key */
-	if (!OidIsValid(node->skewTable))
-		return;
-	/* Also, do nothing if we don't have room for at least one skew bucket */
-	if (mcvsToUse <= 0)
-		return;
-
-	/*
-	 * Try to find the MCV statistics for the outer relation's join key.
-	 */
-	statsTuple = SearchSysCache3(STATRELATTINH,
-								 ObjectIdGetDatum(node->skewTable),
-								 Int16GetDatum(node->skewColumn),
-								 BoolGetDatum(node->skewInherit));
-	if (!HeapTupleIsValid(statsTuple))
-		return;
-
-	if (get_attstatsslot(statsTuple, node->skewColType, node->skewColTypmod,
-						 STATISTIC_KIND_MCV, InvalidOid,
-						 NULL,
-						 &values, &nvalues,
-						 &numbers, &nnumbers))
-	{
-		double		frac;
-		int			nbuckets;
-		FmgrInfo   *hashfunctions;
-		int			i;
-
-		if (mcvsToUse > nvalues)
-			mcvsToUse = nvalues;
-
-		/*
-		 * Calculate the expected fraction of outer relation that will
-		 * participate in the skew optimization.  If this isn't at least
-		 * SKEW_MIN_OUTER_FRACTION, don't use skew optimization.
-		 */
-		frac = 0;
-		for (i = 0; i < mcvsToUse; i++)
-			frac += numbers[i];
-		if (frac < SKEW_MIN_OUTER_FRACTION)
-		{
-			free_attstatsslot(node->skewColType,
-							  values, nvalues, numbers, nnumbers);
-			ReleaseSysCache(statsTuple);
-			return;
-		}
-
-		/*
-		 * Okay, set up the skew hashtable.
-		 *
-		 * skewBucket[] is an open addressing hashtable with a power of 2 size
-		 * that is greater than the number of MCV values.  (This ensures there
-		 * will be at least one null entry, so searches will always
-		 * terminate.)
-		 *
-		 * Note: this code could fail if mcvsToUse exceeds INT_MAX/8 or
-		 * MaxAllocSize/sizeof(void *)/8, but that is not currently possible
-		 * since we limit pg_statistic entries to much less than that.
-		 */
-		nbuckets = 2;
-		while (nbuckets <= mcvsToUse)
-			nbuckets <<= 1;
-		/* use two more bits just to help avoid collisions */
-		nbuckets <<= 2;
-
-		hashtable->skewEnabled = true;
-		hashtable->skewBucketLen = nbuckets;
-
-		/*
-		 * We allocate the bucket memory in the hashtable's batch context. It
-		 * is only needed during the first batch, and this ensures it will be
-		 * automatically removed once the first batch is done.
-		 */
-		hashtable->skewBucket = (HashSkewBucket **)
-			MemoryContextAllocZero(hashtable->batchCxt,
-								   nbuckets * sizeof(HashSkewBucket *));
-		hashtable->skewBucketNums = (int *)
-			MemoryContextAllocZero(hashtable->batchCxt,
-								   mcvsToUse * sizeof(int));
-
-		hashtable->spaceUsed += nbuckets * sizeof(HashSkewBucket *)
-			+ mcvsToUse * sizeof(int);
-		hashtable->spaceUsedSkew += nbuckets * sizeof(HashSkewBucket *)
-			+ mcvsToUse * sizeof(int);
-		if (hashtable->spaceUsed > hashtable->spacePeak)
-			hashtable->spacePeak = hashtable->spaceUsed;
-
-		/*
-		 * Create a skew bucket for each MCV hash value.
-		 *
-		 * Note: it is very important that we create the buckets in order of
-		 * decreasing MCV frequency.  If we have to remove some buckets, they
-		 * must be removed in reverse order of creation (see notes in
-		 * ExecHashRemoveNextSkewBucket) and we want the least common MCVs to
-		 * be removed first.
-		 */
-		hashfunctions = hashtable->outer_hashfunctions;
-
-		for (i = 0; i < mcvsToUse; i++)
-		{
-			uint32		hashvalue;
-			int			bucket;
-
-			hashvalue = DatumGetUInt32(FunctionCall1(&hashfunctions[0],
-													 values[i]));
-
-			/*
-			 * While we have not hit a hole in the hashtable and have not hit
-			 * the desired bucket, we have collided with some previous hash
-			 * value, so try the next bucket location.	NB: this code must
-			 * match ExecHashGetSkewBucket.
-			 */
-			bucket = hashvalue & (nbuckets - 1);
-			while (hashtable->skewBucket[bucket] != NULL &&
-				   hashtable->skewBucket[bucket]->hashvalue != hashvalue)
-				bucket = (bucket + 1) & (nbuckets - 1);
-
-			/*
-			 * If we found an existing bucket with the same hashvalue, leave
-			 * it alone.  It's okay for two MCVs to share a hashvalue.
-			 */
-			if (hashtable->skewBucket[bucket] != NULL)
-				continue;
-
-			/* Okay, create a new skew bucket for this hashvalue. */
-			hashtable->skewBucket[bucket] = (HashSkewBucket *)
-				MemoryContextAlloc(hashtable->batchCxt,
-								   sizeof(HashSkewBucket));
-			hashtable->skewBucket[bucket]->hashvalue = hashvalue;
-			hashtable->skewBucket[bucket]->tuples = NULL;
-			hashtable->skewBucketNums[hashtable->nSkewBuckets] = bucket;
-			hashtable->nSkewBuckets++;
-			hashtable->spaceUsed += SKEW_BUCKET_OVERHEAD;
-			hashtable->spaceUsedSkew += SKEW_BUCKET_OVERHEAD;
-			if (hashtable->spaceUsed > hashtable->spacePeak)
-				hashtable->spacePeak = hashtable->spaceUsed;
-		}
-
-		free_attstatsslot(node->skewColType,
-						  values, nvalues, numbers, nnumbers);
-	}
-
-	ReleaseSysCache(statsTuple);
-}
-
-/*
- * ExecHashGetSkewBucket
- *
- *		Returns the index of the skew bucket for this hashvalue,
- *		or INVALID_SKEW_BUCKET_NO if the hashvalue is not
- *		associated with any active skew bucket.
- */
-int
-ExecHashGetSkewBucket(HashJoinTable hashtable, uint32 hashvalue)
-{
-	int			bucket;
-
-	/*
-	 * Always return INVALID_SKEW_BUCKET_NO if not doing skew optimization (in
-	 * particular, this happens after the initial batch is done).
-	 */
-	if (!hashtable->skewEnabled)
-		return INVALID_SKEW_BUCKET_NO;
-
-	/*
-	 * Since skewBucketLen is a power of 2, we can do a modulo by ANDing.
-	 */
-	bucket = hashvalue & (hashtable->skewBucketLen - 1);
-
-	/*
-	 * While we have not hit a hole in the hashtable and have not hit the
-	 * desired bucket, we have collided with some other hash value, so try the
-	 * next bucket location.
-	 */
-	while (hashtable->skewBucket[bucket] != NULL &&
-		   hashtable->skewBucket[bucket]->hashvalue != hashvalue)
-		bucket = (bucket + 1) & (hashtable->skewBucketLen - 1);
-
-	/*
-	 * Found the desired bucket?
-	 */
-	if (hashtable->skewBucket[bucket] != NULL)
-		return bucket;
-
-	/*
-	 * There must not be any hashtable entry for this hash value.
-	 */
-	return INVALID_SKEW_BUCKET_NO;
-}
-
-/*
- * ExecHashSkewTableInsert
- *
- *		Insert a tuple into the skew hashtable.
- *
- * This should generally match up with the current-batch case in
- * ExecHashTableInsert.
- */
-static void
-ExecHashSkewTableInsert(HashJoinTable hashtable,
-						TupleTableSlot *slot,
-						uint32 hashvalue,
-						int bucketNumber)
-{
-	MinimalTuple tuple = ExecFetchSlotMinimalTuple(slot);
-	HashJoinTuple hashTuple;
-	int			hashTupleSize;
-
-	/* Create the HashJoinTuple */
-	hashTupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
-	hashTuple = (HashJoinTuple) MemoryContextAlloc(hashtable->batchCxt,
-												   hashTupleSize);
-	hashTuple->hashvalue = hashvalue;
-	memcpy(HJTUPLE_MINTUPLE(hashTuple), tuple, tuple->t_len);
-	HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(hashTuple));
-
-	/* Push it onto the front of the skew bucket's list */
-	hashTuple->next = hashtable->skewBucket[bucketNumber]->tuples;
-	hashtable->skewBucket[bucketNumber]->tuples = hashTuple;
-
-	/* Account for space used, and back off if we've used too much */
-	hashtable->spaceUsed += hashTupleSize;
-	hashtable->spaceUsedSkew += hashTupleSize;
-	if (hashtable->spaceUsed > hashtable->spacePeak)
-		hashtable->spacePeak = hashtable->spaceUsed;
-	while (hashtable->spaceUsedSkew > hashtable->spaceAllowedSkew)
-		ExecHashRemoveNextSkewBucket(hashtable);
-}
-
-/*
- *		ExecHashRemoveNextSkewBucket
- *
- *		Remove the least valuable skew bucket by pushing its tuples into
- *		the main hash table.
- */
-static void
-ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
-{
-	int			bucketToRemove;
-	HashSkewBucket *bucket;
-	uint32		hashvalue;
-	int			bucketno;
-	int			batchno;
-	HashJoinTuple hashTuple;
-
-	/* Locate the bucket to remove */
-	bucketToRemove = hashtable->skewBucketNums[hashtable->nSkewBuckets - 1];
-	bucket = hashtable->skewBucket[bucketToRemove];
-
-	/*
-	 * Calculate which bucket and batch the tuples belong to in the main
-	 * hashtable.  They all have the same hash value, so it's the same for all
-	 * of them.  Also note that it's not possible for nbatch to increase while
-	 * we are processing the tuples.
-	 */
-	hashvalue = bucket->hashvalue;
-	ExecHashGetBucket(hashtable, hashvalue, &bucketno);
-
-	/* Process all tuples in the bucket */
-	hashTuple = bucket->tuples;
-	while (hashTuple != NULL)
-	{
-		HashJoinTuple nextHashTuple = hashTuple->next;
-		MinimalTuple tuple;
-		Size		tupleSize;
-
-		/*
-		 * This code must agree with ExecHashTableInsert.  We do not use
-		 * ExecHashTableInsert directly as ExecHashTableInsert expects a
-		 * TupleTableSlot while we already have HashJoinTuples.
-		 */
-		tuple = HJTUPLE_MINTUPLE(hashTuple);
-		tupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
-
-    // CS448: Batching removed, always write to hash table, never temp file
-    /* Move the tuple to the main hash table */
-    hashTuple->next = hashtable->buckets[bucketno];
-    hashtable->buckets[bucketno] = hashTuple;
-    /* We have reduced skew space, but overall space doesn't change */
-    hashtable->spaceUsedSkew -= tupleSize;
-
-		hashTuple = nextHashTuple;
-	}
-
-	/*
-	 * Free the bucket struct itself and reset the hashtable entry to NULL.
-	 *
-	 * NOTE: this is not nearly as simple as it looks on the surface, because
-	 * of the possibility of collisions in the hashtable.  Suppose that hash
-	 * values A and B collide at a particular hashtable entry, and that A was
-	 * entered first so B gets shifted to a different table entry.	If we were
-	 * to remove A first then ExecHashGetSkewBucket would mistakenly start
-	 * reporting that B is not in the hashtable, because it would hit the NULL
-	 * before finding B.  However, we always remove entries in the reverse
-	 * order of creation, so this failure cannot happen.
-	 */
-	hashtable->skewBucket[bucketToRemove] = NULL;
-	hashtable->nSkewBuckets--;
-	pfree(bucket);
-	hashtable->spaceUsed -= SKEW_BUCKET_OVERHEAD;
-	hashtable->spaceUsedSkew -= SKEW_BUCKET_OVERHEAD;
-
-	/*
-	 * If we have removed all skew buckets then give up on skew optimization.
-	 * Release the arrays since they aren't useful any more.
-	 */
-	if (hashtable->nSkewBuckets == 0)
-	{
-		hashtable->skewEnabled = false;
-		pfree(hashtable->skewBucket);
-		pfree(hashtable->skewBucketNums);
-		hashtable->skewBucket = NULL;
-		hashtable->skewBucketNums = NULL;
-		hashtable->spaceUsed -= hashtable->spaceUsedSkew;
-		hashtable->spaceUsedSkew = 0;
-	}
-}
+// CS448: Removed ExecHashBuildSkewHash
+// CS448: Removed ExecHashGetSkewBucket
+// CS448: Removed ExecHashSkewTableInsert
+// CS448: Removed ExecHashRemoveNextSkewBucket

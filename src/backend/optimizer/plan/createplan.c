@@ -2424,7 +2424,8 @@ create_hashjoin_plan(PlannerInfo *root,
 	Oid			skewColType = InvalidOid;
 	int32		skewColTypmod = -1;
 	HashJoin   *join_plan;
-	Hash	   *hash_plan;
+	Hash	   *inner_hash_plan;
+	Hash	   *outer_hash_plan;
 
 	/* Sort join qual clauses into best execution order */
 	joinclauses = order_qual_clauses(root, best_path->jpath.joinrestrictinfo);
@@ -2513,8 +2514,15 @@ create_hashjoin_plan(PlannerInfo *root,
 
 	/*
 	 * Build the hash node and hash join node.
+   * CS448: Added hash node around outer plan
 	 */
-	hash_plan = make_hash(inner_plan,
+	inner_hash_plan = make_hash(inner_plan,
+						  skewTable,
+						  skewColumn,
+						  skewInherit,
+						  skewColType,
+						  skewColTypmod);
+	outer_hash_plan = make_hash(outer_plan,
 						  skewTable,
 						  skewColumn,
 						  skewInherit,
@@ -2524,8 +2532,8 @@ create_hashjoin_plan(PlannerInfo *root,
 							  joinclauses,
 							  otherclauses,
 							  hashclauses,
-							  outer_plan,
-							  (Plan *) hash_plan,
+							  (Plan *) outer_hash_plan,
+							  (Plan *) inner_hash_plan,
 							  best_path->jpath.jointype);
 
 	copy_path_costsize(&join_plan->join.plan, &best_path->jpath.path);
