@@ -1172,25 +1172,12 @@ ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
 		tuple = HJTUPLE_MINTUPLE(hashTuple);
 		tupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
 
-		/* Decide whether to put the tuple in the hash table or a temp file */
-		if (batchno == hashtable->curbatch)
-		{
-			/* Move the tuple to the main hash table */
-			hashTuple->next = hashtable->buckets[bucketno];
-			hashtable->buckets[bucketno] = hashTuple;
-			/* We have reduced skew space, but overall space doesn't change */
-			hashtable->spaceUsedSkew -= tupleSize;
-		}
-		else
-		{
-			/* Put the tuple into a temp file for later batches */
-			Assert(batchno > hashtable->curbatch);
-			ExecHashJoinSaveTuple(tuple, hashvalue,
-								  &hashtable->innerBatchFile[batchno]);
-			pfree(hashTuple);
-			hashtable->spaceUsed -= tupleSize;
-			hashtable->spaceUsedSkew -= tupleSize;
-		}
+    // CS448: Batching removed, always write to hash table, never temp file
+    /* Move the tuple to the main hash table */
+    hashTuple->next = hashtable->buckets[bucketno];
+    hashtable->buckets[bucketno] = hashTuple;
+    /* We have reduced skew space, but overall space doesn't change */
+    hashtable->spaceUsedSkew -= tupleSize;
 
 		hashTuple = nextHashTuple;
 	}
