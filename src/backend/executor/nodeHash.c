@@ -278,14 +278,8 @@ ExecHashTableCreate(Hash *node, List *hashOperators, bool keepNulls)
 	hashtable->skewBucketLen = 0;
 	hashtable->nSkewBuckets = 0;
 	hashtable->skewBucketNums = NULL;
-	hashtable->nbatch = nbatch;
-	hashtable->curbatch = 0;
-	hashtable->nbatch_original = nbatch;
-	hashtable->nbatch_outstart = nbatch;
 	hashtable->growEnabled = true;
 	hashtable->totalTuples = 0;
-	hashtable->innerBatchFile = NULL;
-	hashtable->outerBatchFile = NULL;
 	hashtable->spaceUsed = 0;
 	hashtable->spacePeak = 0;
 	hashtable->spaceAllowed = work_mem * 1024L;
@@ -339,20 +333,6 @@ ExecHashTableCreate(Hash *node, List *hashOperators, bool keepNulls)
 
 	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
 
-	if (nbatch > 1)
-	{
-		/*
-		 * allocate and initialize the file arrays in hashCxt
-		 */
-		hashtable->innerBatchFile = (BufFile **)
-			palloc0(nbatch * sizeof(BufFile *));
-		hashtable->outerBatchFile = (BufFile **)
-			palloc0(nbatch * sizeof(BufFile *));
-		/* The files will not be opened until needed... */
-		/* ... but make sure we have temp tablespaces established for them */
-		PrepareTempTablespaces();
-	}
-
 	/*
 	 * Prepare context for the first-scan space allocations; allocate the
 	 * hashbucket array therein, and set each bucket "empty".
@@ -361,13 +341,6 @@ ExecHashTableCreate(Hash *node, List *hashOperators, bool keepNulls)
 
 	hashtable->buckets = (HashJoinTuple *)
 		palloc0(nbuckets * sizeof(HashJoinTuple));
-
-	/*
-	 * Set up for skew optimization, if possible and there's a need for more
-	 * than one batch.	(In a one-batch join, there's no point in it.)
-	 */
-	if (nbatch > 1)
-		ExecHashBuildSkewHash(hashtable, node, num_skew_mcvs);
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -395,7 +368,6 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 	long		hash_table_bytes;
 	long		skew_table_bytes;
 	long		max_pointers;
-	int			nbatch;
 	int			nbuckets;
 	int			i;
 
@@ -471,8 +443,6 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
   dbuckets = Min(dbuckets, max_pointers);
   nbuckets = (int) dbuckets;
 
-  nbatch = 1;
-
 	/*
 	 * Both nbuckets and nbatch must be powers of 2 to make
 	 * ExecHashGetBucket fast.	We already fixed nbatch; now inflate
@@ -487,7 +457,7 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 	nbuckets = (1 << i);
 
 	*numbuckets = nbuckets;
-	*numbatches = nbatch;
+	*numbatches = 1;
 }
 
 
@@ -500,21 +470,6 @@ ExecChooseHashTableSize(double ntuples, int tupwidth, bool useskew,
 void
 ExecHashTableDestroy(HashJoinTable hashtable)
 {
-	int			i;
-
-	/*
-	 * Make sure all the temp files are closed.  We skip batch 0, since it
-	 * can't have any temp files (and the arrays might not even exist if
-	 * nbatch is only 1).
-	 */
-	for (i = 1; i < hashtable->nbatch; i++)
-	{
-		if (hashtable->innerBatchFile[i])
-			BufFileClose(hashtable->innerBatchFile[i]);
-		if (hashtable->outerBatchFile[i])
-			BufFileClose(hashtable->outerBatchFile[i]);
-	}
-
 	/* Release working memory (batchCxt is a child, so it goes away too) */
 	MemoryContextDelete(hashtable->hashCxt);
 
@@ -542,56 +497,42 @@ ExecHashTableInsert(HashJoinTable hashtable,
 {
 	MinimalTuple tuple = ExecFetchSlotMinimalTuple(slot);
 	int			bucketno;
-	int			batchno;
 
 	ExecHashGetBucket(hashtable, hashvalue, &bucketno);
 
 	/*
 	 * decide whether to put the tuple in the hash table or a temp file
 	 */
-	if (batchno == hashtable->curbatch)
-	{
-		/*
-		 * put the tuple in hash table
-		 */
-		HashJoinTuple hashTuple;
-		int			hashTupleSize;
+  /*
+   * put the tuple in hash table
+   */
+  HashJoinTuple hashTuple;
+  int			hashTupleSize;
 
-		/* Create the HashJoinTuple */
-		hashTupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
-		hashTuple = (HashJoinTuple) MemoryContextAlloc(hashtable->batchCxt,
-													   hashTupleSize);
-		hashTuple->hashvalue = hashvalue;
-		memcpy(HJTUPLE_MINTUPLE(hashTuple), tuple, tuple->t_len);
+  /* Create the HashJoinTuple */
+  hashTupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
+  hashTuple = (HashJoinTuple) MemoryContextAlloc(hashtable->batchCxt,
+                           hashTupleSize);
+  hashTuple->hashvalue = hashvalue;
+  memcpy(HJTUPLE_MINTUPLE(hashTuple), tuple, tuple->t_len);
 
-		/*
-		 * We always reset the tuple-matched flag on insertion.  This is okay
-		 * even when reloading a tuple from a batch file, since the tuple
-		 * could not possibly have been matched to an outer tuple before it
-		 * went into the batch file.
-		 */
-		HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(hashTuple));
+  /*
+   * We always reset the tuple-matched flag on insertion.  This is okay
+   * even when reloading a tuple from a batch file, since the tuple
+   * could not possibly have been matched to an outer tuple before it
+   * went into the batch file.
+   */
+  HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(hashTuple));
 
-		/* Push it onto the front of the bucket's list */
-		hashTuple->next = hashtable->buckets[bucketno];
-		hashtable->buckets[bucketno] = hashTuple;
+  /* Push it onto the front of the bucket's list */
+  hashTuple->next = hashtable->buckets[bucketno];
+  hashtable->buckets[bucketno] = hashTuple;
 
-		/* Account for space used, and back off if we've used too much */
-		hashtable->spaceUsed += hashTupleSize;
-		if (hashtable->spaceUsed > hashtable->spacePeak)
-			hashtable->spacePeak = hashtable->spaceUsed;
+  /* Account for space used, and back off if we've used too much */
+  hashtable->spaceUsed += hashTupleSize;
+  if (hashtable->spaceUsed > hashtable->spacePeak)
+    hashtable->spacePeak = hashtable->spaceUsed;
 	}
-	else
-	{
-		/*
-		 * put the tuple into a temp file for later batches
-		 */
-		Assert(batchno > hashtable->curbatch);
-		ExecHashJoinSaveTuple(tuple,
-							  hashvalue,
-							  &hashtable->innerBatchFile[batchno]);
-	}
-}
 
 /*
  * ExecHashGetHashValue

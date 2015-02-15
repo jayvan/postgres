@@ -34,10 +34,9 @@ extern bool ExecHashGetHashValue(HashJoinTable hashtable,
 					 bool outer_tuple,
 					 bool keep_nulls,
 					 uint32 *hashvalue);
-extern void ExecHashGetBucketAndBatch(HashJoinTable hashtable,
+extern void ExecHashGetBucket(HashJoinTable hashtable,
 						  uint32 hashvalue,
-						  int *bucketno,
-						  int *batchno);
+						  int *bucketno);
 extern bool ExecScanHashBucket(HashJoinState *hjstate, ExprContext *econtext);
 extern void ExecPrepHashTableForUnmatched(HashJoinState *hjstate);
 extern bool ExecScanHashTableForUnmatched(HashJoinState *hjstate,
