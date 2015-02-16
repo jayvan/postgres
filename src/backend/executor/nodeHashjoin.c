@@ -517,6 +517,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->hj_HashOperators = hoperators;
 	/* child Hash node needs to evaluate inner hash keys, too */
 	((HashState *) innerPlanState(hjstate))->hashkeys = rclauses;
+	((HashState *) outerPlanState(hjstate))->hashkeys = rclauses;
 
 	hjstate->js.ps.ps_TupFromTlist = false;
 	hjstate->hj_JoinState = HJ_BUILD_HASHTABLE;
