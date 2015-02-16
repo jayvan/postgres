@@ -367,7 +367,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 		HashState  *hashstate = (HashState *) innerPlanState(hjstate);
 		TupleTableSlot *slot = hashstate->ps.ps_ResultTupleSlot;
 
-		hjstate->hj_HashTupleSlot = slot;
+		hjstate->hj_InnerHashTupleSlot = slot;
 	}
 
 	/*
@@ -464,7 +464,7 @@ ExecEndHashJoin(HashJoinState *node)
 	 */
 	ExecClearTuple(node->js.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->hj_OuterTupleSlot);
-	ExecClearTuple(node->hj_HashTupleSlot);
+	ExecClearTuple(node->hj_InnerHashTupleSlot);
 
 	/*
 	 * clean up subtrees

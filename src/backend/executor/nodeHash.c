@@ -697,7 +697,7 @@ ExecHashGetBucket(HashJoinTable hashtable,
  * The current outer tuple must be stored in econtext->ecxt_outertuple.
  *
  * On success, the inner tuple is stored into hjstate->hj_CurTuple and
- * econtext->ecxt_innertuple, using hjstate->hj_HashTupleSlot as the slot
+ * econtext->ecxt_innertuple, using hjstate->hj_InnerHashTupleSlot as the slot
  * for the latter.
  */
 bool
@@ -732,7 +732,7 @@ ExecScanHashBucket(HashJoinState *hjstate,
 
 			/* insert hashtable's tuple into exec slot so ExecQual sees it */
 			inntuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
-											 hjstate->hj_HashTupleSlot,
+											 hjstate->hj_InnerHashTupleSlot,
 											 false);	/* do not pfree */
 			econtext->ecxt_innertuple = inntuple;
 
@@ -779,7 +779,7 @@ ExecPrepHashTableForUnmatched(HashJoinState *hjstate)
  *		scan the hash table for unmatched inner tuples
  *
  * On success, the inner tuple is stored into hjstate->hj_CurTuple and
- * econtext->ecxt_innertuple, using hjstate->hj_HashTupleSlot as the slot
+ * econtext->ecxt_innertuple, using hjstate->hj_InnerHashTupleSlot as the slot
  * for the latter.
  */
 bool
@@ -820,7 +820,7 @@ ExecScanHashTableForUnmatched(HashJoinState *hjstate, ExprContext *econtext)
 
 				/* insert hashtable's tuple into exec slot */
 				inntuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
-												 hjstate->hj_HashTupleSlot,
+												 hjstate->hj_InnerHashTupleSlot,
 												 false);		/* do not pfree */
 				econtext->ecxt_innertuple = inntuple;
 

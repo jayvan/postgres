@@ -1578,7 +1578,7 @@ typedef struct MergeJoinState
  *								(hj_CurXXX variables are undefined if
  *								OuterTupleSlot is empty!)
  *		hj_OuterTupleSlot		tuple slot for outer tuples
- *		hj_HashTupleSlot		tuple slot for inner (hashed) tuples
+ *		hj_InnerHashTupleSlot		tuple slot for inner (hashed) tuples
  *		hj_NullOuterTupleSlot	prepared null tuple for right/full outer joins
  *		hj_NullInnerTupleSlot	prepared null tuple for left/full outer joins
  *		hj_FirstOuterTupleSlot	first tuple retrieved from outer plan
@@ -1606,7 +1606,7 @@ typedef struct HashJoinState
 	int			hj_CurSkewBucketNo;
 	HashJoinTuple hj_CurTuple;
 	TupleTableSlot *hj_OuterTupleSlot;
-	TupleTableSlot *hj_HashTupleSlot;
+	TupleTableSlot *hj_InnerHashTupleSlot;
 	TupleTableSlot *hj_NullOuterTupleSlot;
 	TupleTableSlot *hj_NullInnerTupleSlot;
 	TupleTableSlot *hj_FirstOuterTupleSlot;
