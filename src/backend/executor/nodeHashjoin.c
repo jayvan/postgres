@@ -61,7 +61,7 @@ ExecHashJoin(HashJoinState *node)
 	List	   *otherqual;
 	ExprContext *econtext;
 	ExprDoneCond isDone;
-	HashJoinTable hashtable;
+	HashJoinTable hashtableInner;
 	HashJoinTable hashtableOuter;
 	TupleTableSlot *outerTupleSlot;
 	uint32		hashvalue;
@@ -74,7 +74,7 @@ ExecHashJoin(HashJoinState *node)
 	otherqual = node->js.ps.qual;
 	innerNode = (HashState *) innerPlanState(node);
 	outerNode = (HashState *) outerPlanState(node);
-	hashtable = node->hj_InnerHashTable;
+	hashtableInner = node->hj_InnerHashTable;
 	hashtableOuter = node->hj_OuterHashTable;
 	econtext = node->js.ps.ps_ExprContext;
 
@@ -113,17 +113,17 @@ ExecHashJoin(HashJoinState *node)
 				/*
 				 * First time through: build hash table for inner/outer relation.
 				 */
-				Assert(hashtable == NULL);
+				Assert(hashtableInner == NULL);
 				Assert(hashtableOuter == NULL);
         node->hj_FirstOuterTupleSlot = NULL;
 
 				/*
 				 * create the hash tables
 				 */
-				hashtable = ExecHashTableCreate((Hash *) innerNode->ps.plan,
+				hashtableInner = ExecHashTableCreate((Hash *) innerNode->ps.plan,
 												node->hj_HashOperators,
 												HJ_FILL_INNER(node));
-				node->hj_InnerHashTable = hashtable;
+				node->hj_InnerHashTable = hashtableInner;
 
 				hashtableOuter = ExecHashTableCreate((Hash *) outerNode->ps.plan,
 												node->hj_HashOperators,
@@ -133,7 +133,7 @@ ExecHashJoin(HashJoinState *node)
 				/*
 				 * execute the Hash node, to build the hash table
 				 */
-				innerNode->hashtable = hashtable;
+				innerNode->hashtable = hashtableInner;
         outerNode->hashtable = hashtableOuter;
 
         do {
@@ -145,7 +145,8 @@ ExecHashJoin(HashJoinState *node)
 				 * need to remember whether nbatch has increased since we
 				 * began scanning the outer relation
 				 */
-				hashtable->nbatch_outstart = hashtable->nbatch;
+				hashtableInner->nbatch_outstart = hashtableInner->nbatch;
+				hashtableOuter->nbatch_outstart = hashtableOuter->nbatch;
 
 				/*
 				 * Reset OuterNotEmpty for scan.  (It's OK if we fetched a
@@ -186,10 +187,9 @@ ExecHashJoin(HashJoinState *node)
 				 * hash table or skew hash table.
 				 */
 				node->hj_CurHashValue = hashvalue;
-				ExecHashGetBucket(hashtable, hashvalue,
+				ExecHashGetBucket(hashtableInner, hashvalue,
 										  &node->hj_CurBucketNo);
-				node->hj_CurSkewBucketNo = ExecHashGetSkewBucket(hashtable,
-																 hashvalue);
+				node->hj_CurSkewBucketNo = INVALID_SKEW_BUCKET_NO;
 				node->hj_CurTuple = NULL;
 
 
@@ -580,7 +580,7 @@ ExecEndHashJoin(HashJoinState *node)
 static TupleTableSlot *
 ExecHashJoinOuterGetTuple(HashJoinState *hjstate, uint32 *hashvalue)
 {
-  PlanState *outerNode = outerPlanState(hjstate);
+  HashState *outerNode = (HashState *)outerPlanState(hjstate);
 	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	TupleTableSlot *slot;
   slot = ExecHash(outerNode);
