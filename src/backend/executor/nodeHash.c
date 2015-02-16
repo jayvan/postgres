@@ -99,17 +99,7 @@ ExecHash(HashState *node)
     int			bucketNumber;
 
     bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
-    if (bucketNumber != INVALID_SKEW_BUCKET_NO)
-    {
-      /* It's a skew tuple, so put it into that hash table */
-      ExecHashSkewTableInsert(hashtable, slot, hashvalue,
-                  bucketNumber);
-    }
-    else
-    {
-      /* Not subject to skew optimization, so insert normally */
-      ExecHashTableInsert(hashtable, slot, hashvalue);
-    }
+    ExecHashTableInsert(hashtable, slot, hashvalue);
     hashtable->totalTuples += 1;
   }
 
@@ -559,7 +549,7 @@ ExecHashTableInsert(HashJoinTable hashtable,
 	int			bucketno;
 
 	ExecHashGetBucket(hashtable, hashvalue, &bucketno);
-
+  elog(NOTICE, "CS448: Inserting tuple with hash %X into %p bucket %d", hashvalue, hashtable, bucketno);
 	/*
 	 * decide whether to put the tuple in the hash table or a temp file
 	 */

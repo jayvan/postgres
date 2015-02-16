@@ -582,17 +582,7 @@ ExecHashJoinOuterGetTuple(HashJoinState *hjstate, uint32 *hashvalue)
   PlanState *outerNode = outerPlanState(hjstate);
 	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	TupleTableSlot *slot;
-
-  // CS448: It's always the right batch (batching removed)
-  /*
-   * Check to see if first outer tuple was already fetched by
-   * ExecHashJoin() and not used yet.
-   */
-  slot = hjstate->hj_FirstOuterTupleSlot;
-  if (!TupIsNull(slot))
-    hjstate->hj_FirstOuterTupleSlot = NULL;
-  else
-    slot = ExecHash(outerNode);
+  slot = ExecHash(outerNode);
 
   while (!TupIsNull(slot))
   {
@@ -605,12 +595,9 @@ ExecHashJoinOuterGetTuple(HashJoinState *hjstate, uint32 *hashvalue)
     if (ExecHashGetHashValue(hashtable, econtext,
                  hjstate->hj_OuterHashKeys,
                  true,		/* outer tuple */
-                 HJ_FILL_OUTER(hjstate),
+                 false,
                  hashvalue))
     {
-      /* remember outer relation is not empty for possible rescan */
-      hjstate->hj_OuterNotEmpty = true;
-
       return slot;
     }
 
