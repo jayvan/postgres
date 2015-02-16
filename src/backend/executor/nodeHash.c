@@ -38,10 +38,6 @@
 #include "utils/syscache.h"
 
 
-static void ExecHashSkewTableInsert(HashJoinTable hashtable,
-						TupleTableSlot *slot,
-						uint32 hashvalue,
-						int bucketNumber);
 static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
 
 
@@ -158,17 +154,7 @@ MultiExecHash(HashState *node)
 			int			bucketNumber;
 
 			bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
-			if (bucketNumber != INVALID_SKEW_BUCKET_NO)
-			{
-				/* It's a skew tuple, so put it into that hash table */
-				ExecHashSkewTableInsert(hashtable, slot, hashvalue,
-										bucketNumber);
-			}
-			else
-			{
-				/* Not subject to skew optimization, so insert normally */
-				ExecHashTableInsert(hashtable, slot, hashvalue);
-			}
+      ExecHashTableInsert(hashtable, slot, hashvalue);
 			hashtable->totalTuples += 1;
 		}
 	}
@@ -972,45 +958,6 @@ ExecHashGetSkewBucket(HashJoinTable hashtable, uint32 hashvalue)
 	 * There must not be any hashtable entry for this hash value.
 	 */
 	return INVALID_SKEW_BUCKET_NO;
-}
-
-/*
- * ExecHashSkewTableInsert
- *
- *		Insert a tuple into the skew hashtable.
- *
- * This should generally match up with the current-batch case in
- * ExecHashTableInsert.
- */
-static void
-ExecHashSkewTableInsert(HashJoinTable hashtable,
-						TupleTableSlot *slot,
-						uint32 hashvalue,
-						int bucketNumber)
-{
-	MinimalTuple tuple = ExecFetchSlotMinimalTuple(slot);
-	HashJoinTuple hashTuple;
-	int			hashTupleSize;
-
-	/* Create the HashJoinTuple */
-	hashTupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
-	hashTuple = (HashJoinTuple) MemoryContextAlloc(hashtable->batchCxt,
-												   hashTupleSize);
-	hashTuple->hashvalue = hashvalue;
-	memcpy(HJTUPLE_MINTUPLE(hashTuple), tuple, tuple->t_len);
-	HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(hashTuple));
-
-	/* Push it onto the front of the skew bucket's list */
-	hashTuple->next = hashtable->skewBucket[bucketNumber]->tuples;
-	hashtable->skewBucket[bucketNumber]->tuples = hashTuple;
-
-	/* Account for space used, and back off if we've used too much */
-	hashtable->spaceUsed += hashTupleSize;
-	hashtable->spaceUsedSkew += hashTupleSize;
-	if (hashtable->spaceUsed > hashtable->spacePeak)
-		hashtable->spacePeak = hashtable->spaceUsed;
-	while (hashtable->spaceUsedSkew > hashtable->spaceAllowedSkew)
-		ExecHashRemoveNextSkewBucket(hashtable);
 }
 
 /*
