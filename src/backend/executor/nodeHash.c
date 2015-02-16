@@ -38,9 +38,6 @@
 #include "utils/syscache.h"
 
 
-static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
-
-
 /* ----------------------------------------------------------------
  *		ExecHash
  *
@@ -958,93 +955,4 @@ ExecHashGetSkewBucket(HashJoinTable hashtable, uint32 hashvalue)
 	 * There must not be any hashtable entry for this hash value.
 	 */
 	return INVALID_SKEW_BUCKET_NO;
-}
-
-/*
- *		ExecHashRemoveNextSkewBucket
- *
- *		Remove the least valuable skew bucket by pushing its tuples into
- *		the main hash table.
- */
-static void
-ExecHashRemoveNextSkewBucket(HashJoinTable hashtable)
-{
-	int			bucketToRemove;
-	HashSkewBucket *bucket;
-	uint32		hashvalue;
-	int			bucketno;
-	int			batchno;
-	HashJoinTuple hashTuple;
-
-	/* Locate the bucket to remove */
-	bucketToRemove = hashtable->skewBucketNums[hashtable->nSkewBuckets - 1];
-	bucket = hashtable->skewBucket[bucketToRemove];
-
-	/*
-	 * Calculate which bucket and batch the tuples belong to in the main
-	 * hashtable.  They all have the same hash value, so it's the same for all
-	 * of them.  Also note that it's not possible for nbatch to increase while
-	 * we are processing the tuples.
-	 */
-	hashvalue = bucket->hashvalue;
-	ExecHashGetBucket(hashtable, hashvalue, &bucketno);
-
-	/* Process all tuples in the bucket */
-	hashTuple = bucket->tuples;
-	while (hashTuple != NULL)
-	{
-		HashJoinTuple nextHashTuple = hashTuple->next;
-		MinimalTuple tuple;
-		Size		tupleSize;
-
-		/*
-		 * This code must agree with ExecHashTableInsert.  We do not use
-		 * ExecHashTableInsert directly as ExecHashTableInsert expects a
-		 * TupleTableSlot while we already have HashJoinTuples.
-		 */
-		tuple = HJTUPLE_MINTUPLE(hashTuple);
-		tupleSize = HJTUPLE_OVERHEAD + tuple->t_len;
-
-    // CS448: Batching removed, always write to hash table, never temp file
-    /* Move the tuple to the main hash table */
-    hashTuple->next = hashtable->buckets[bucketno];
-    hashtable->buckets[bucketno] = hashTuple;
-    /* We have reduced skew space, but overall space doesn't change */
-    hashtable->spaceUsedSkew -= tupleSize;
-
-		hashTuple = nextHashTuple;
-	}
-
-	/*
-	 * Free the bucket struct itself and reset the hashtable entry to NULL.
-	 *
-	 * NOTE: this is not nearly as simple as it looks on the surface, because
-	 * of the possibility of collisions in the hashtable.  Suppose that hash
-	 * values A and B collide at a particular hashtable entry, and that A was
-	 * entered first so B gets shifted to a different table entry.	If we were
-	 * to remove A first then ExecHashGetSkewBucket would mistakenly start
-	 * reporting that B is not in the hashtable, because it would hit the NULL
-	 * before finding B.  However, we always remove entries in the reverse
-	 * order of creation, so this failure cannot happen.
-	 */
-	hashtable->skewBucket[bucketToRemove] = NULL;
-	hashtable->nSkewBuckets--;
-	pfree(bucket);
-	hashtable->spaceUsed -= SKEW_BUCKET_OVERHEAD;
-	hashtable->spaceUsedSkew -= SKEW_BUCKET_OVERHEAD;
-
-	/*
-	 * If we have removed all skew buckets then give up on skew optimization.
-	 * Release the arrays since they aren't useful any more.
-	 */
-	if (hashtable->nSkewBuckets == 0)
-	{
-		hashtable->skewEnabled = false;
-		pfree(hashtable->skewBucket);
-		pfree(hashtable->skewBucketNums);
-		hashtable->skewBucket = NULL;
-		hashtable->skewBucketNums = NULL;
-		hashtable->spaceUsed -= hashtable->spaceUsedSkew;
-		hashtable->spaceUsedSkew = 0;
-	}
 }
