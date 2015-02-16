@@ -58,7 +58,6 @@ static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
 TupleTableSlot *
 ExecHash(HashState *node)
 {
-  elog(NOTICE, "CS448: Calling execHash %d", node);
 	PlanState  *outerNode;
 	List	   *hashkeys;
 	HashJoinTable hashtable;
@@ -209,7 +208,7 @@ MultiExecHash(HashState *node)
 HashState *
 ExecInitHash(Hash *node, EState *estate, int eflags)
 {
-	HashState  *hashstate;
+	HrshState  *hashstate;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));

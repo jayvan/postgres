@@ -63,6 +63,7 @@ ExecHashJoin(HashJoinState *node)
 	ExprContext *econtext;
 	ExprDoneCond isDone;
 	HashJoinTable hashtable;
+	HashJoinTable hashtableOuter;
 	TupleTableSlot *outerTupleSlot;
 	uint32		hashvalue;
   TupleTableSlot *hashSlot;
@@ -75,6 +76,7 @@ ExecHashJoin(HashJoinState *node)
 	hashNode = (HashState *) innerPlanState(node);
 	outerNode = (HashState *) outerPlanState(node);
 	hashtable = node->hj_InnerHashTable;
+	hashtableOuter = node->hj_OuterHashTable;
 	econtext = node->js.ps.ps_ExprContext;
 
 	/*
@@ -110,35 +112,35 @@ ExecHashJoin(HashJoinState *node)
 			case HJ_BUILD_HASHTABLE:
 
 				/*
-				 * First time through: build hash table for inner relation.
+				 * First time through: build hash table for inner/outer relation.
 				 */
 				Assert(hashtable == NULL);
+				Assert(hashtableOuter == NULL);
         node->hj_FirstOuterTupleSlot = NULL;
 
 				/*
-				 * create the hash table
+				 * create the hash tables
 				 */
 				hashtable = ExecHashTableCreate((Hash *) hashNode->ps.plan,
 												node->hj_HashOperators,
 												HJ_FILL_INNER(node));
 				node->hj_InnerHashTable = hashtable;
 
+				hashtableOuter = ExecHashTableCreate((Hash *) outerNode->ps.plan,
+												node->hj_HashOperators,
+												HJ_FILL_OUTER(node));
+				node->hj_OuterHashTable = hashtableOuter;
+
 				/*
 				 * execute the Hash node, to build the hash table
 				 */
 				hashNode->hashtable = hashtable;
+        outerNode->hashtable = hashtableOuter;
 
         do {
           hashSlot = ExecHash(hashNode);
         } while (hashSlot != NULL);
 
-				/*
-				 * If the inner relation is completely empty, and we're not
-				 * doing a left outer join, we can quit without scanning the
-				 * outer relation.
-				 */
-				if (hashtable->totalTuples == 0 && !HJ_FILL_OUTER(node))
-					return NULL;
 
 				/*
 				 * need to remember whether nbatch has increased since we
@@ -415,10 +417,10 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	 * would amount to betting that the hash will be a single batch.  Not
 	 * clear if this would be a win or not.
 	 */
-	outerNode =(Hash *) outerPlan(node);
+	outerNode = (Hash *) outerPlan(node);
 	hashNode = (Hash *) innerPlan(node);
 
-	innerPlanState(hjstate) = ExecInitNode((Plan *) outerNode, estate, eflags);
+	outerPlanState(hjstate) = ExecInitNode((Plan *) outerNode, estate, eflags);
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 
 	/*
@@ -484,6 +486,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	 * initialize hash-specific info
 	 */
 	hjstate->hj_InnerHashTable = NULL;
+	hjstate->hj_OuterHashTable = NULL;
 	hjstate->hj_FirstOuterTupleSlot = NULL;
 
 	hjstate->hj_CurHashValue = 0;
@@ -536,12 +539,21 @@ void
 ExecEndHashJoin(HashJoinState *node)
 {
 	/*
-	 * Free hash table
+	 * Free hash tables
 	 */
 	if (node->hj_InnerHashTable)
 	{
 		ExecHashTableDestroy(node->hj_InnerHashTable);
 		node->hj_InnerHashTable = NULL;
+	}
+
+  /*
+   * CS448: Also free the outer hash table
+   */
+	if (node->hj_OuterHashTable)
+	{
+		ExecHashTableDestroy(node->hj_OuterHashTable);
+		node->hj_OuterHashTable = NULL;
 	}
 
 	/*

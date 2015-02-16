@@ -1600,6 +1600,7 @@ typedef struct HashJoinState
 	List	   *hj_InnerHashKeys;		/* list of ExprState nodes */
 	List	   *hj_HashOperators;		/* list of operator OIDs */
 	HashJoinTable hj_InnerHashTable;
+	HashJoinTable hj_OuterHashTable;
 	uint32		hj_CurHashValue;
 	int			hj_CurBucketNo;
 	int			hj_CurSkewBucketNo;
