@@ -530,7 +530,6 @@ ExecHashTableInsert(HashJoinTable hashtable,
 	int			bucketno;
 
 	ExecHashGetBucket(hashtable, hashvalue, &bucketno);
-  elog(NOTICE, "CS448: Inserting tuple with hash %X into %p bucket %d", hashvalue, hashtable, bucketno);
 	/*
 	 * decide whether to put the tuple in the hash table or a temp file
 	 */
@@ -558,6 +557,7 @@ ExecHashTableInsert(HashJoinTable hashtable,
   /* Push it onto the front of the bucket's list */
   hashTuple->next = hashtable->buckets[bucketno];
   hashtable->buckets[bucketno] = hashTuple;
+  elog(NOTICE, "CS448: Inserting tuple with hash %X into %p bucket %d at %p", hashvalue, hashtable, bucketno, hashtable->buckets[bucketno]);
 
   /* Account for space used, and back off if we've used too much */
   hashtable->spaceUsed += hashTupleSize;
@@ -709,6 +709,7 @@ ExecScanHashBucket(HashJoinState *hjstate,
 	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
 	uint32		hashvalue = hjstate->hj_CurHashValue;
 
+
 	/*
 	 * hj_CurTuple is the address of the tuple last returned from the current
 	 * bucket, or NULL if it's time to start scanning a new bucket.
@@ -718,10 +719,10 @@ ExecScanHashBucket(HashJoinState *hjstate,
 	 */
 	if (hashTuple != NULL)
 		hashTuple = hashTuple->next;
-	else if (hjstate->hj_CurSkewBucketNo != INVALID_SKEW_BUCKET_NO)
-		hashTuple = hashtable->skewBucket[hjstate->hj_CurSkewBucketNo]->tuples;
-	else
+	else {
 		hashTuple = hashtable->buckets[hjstate->hj_CurBucketNo];
+    elog(NOTICE, "Scanning table %p bucket %d address %p", hashtable, hjstate->hj_CurBucketNo, hashTuple);
+  }
 
 	while (hashTuple != NULL)
 	{
