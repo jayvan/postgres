@@ -56,7 +56,7 @@ TupleTableSlot *				/* return: a tuple or NULL */
 ExecHashJoin(HashJoinState *node)
 {
 	HashState  *outerNode;
-	HashState  *hashNode;
+	HashState  *innerNode;
 	List	   *joinqual;
 	List	   *otherqual;
 	ExprContext *econtext;
@@ -72,7 +72,7 @@ ExecHashJoin(HashJoinState *node)
 	 */
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
-	hashNode = (HashState *) innerPlanState(node);
+	innerNode = (HashState *) innerPlanState(node);
 	outerNode = (HashState *) outerPlanState(node);
 	hashtable = node->hj_InnerHashTable;
 	hashtableOuter = node->hj_OuterHashTable;
@@ -120,7 +120,7 @@ ExecHashJoin(HashJoinState *node)
 				/*
 				 * create the hash tables
 				 */
-				hashtable = ExecHashTableCreate((Hash *) hashNode->ps.plan,
+				hashtable = ExecHashTableCreate((Hash *) innerNode->ps.plan,
 												node->hj_HashOperators,
 												HJ_FILL_INNER(node));
 				node->hj_InnerHashTable = hashtable;
@@ -133,11 +133,11 @@ ExecHashJoin(HashJoinState *node)
 				/*
 				 * execute the Hash node, to build the hash table
 				 */
-				hashNode->hashtable = hashtable;
+				innerNode->hashtable = hashtable;
         outerNode->hashtable = hashtableOuter;
 
         do {
-          hashSlot = ExecHash(hashNode);
+          hashSlot = ExecHash(innerNode);
         } while (hashSlot != NULL);
 
 
@@ -367,7 +367,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 {
 	HashJoinState *hjstate;
   Hash     *outerNode;
-	Hash	   *hashNode;
+	Hash	   *innerNode;
 	List	   *lclauses;
 	List	   *rclauses;
 	List	   *hoperators;
@@ -415,10 +415,10 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	 * clear if this would be a win or not.
 	 */
 	outerNode = (Hash *) outerPlan(node);
-	hashNode = (Hash *) innerPlan(node);
+	innerNode = (Hash *) innerPlan(node);
 
 	outerPlanState(hjstate) = ExecInitNode((Plan *) outerNode, estate, eflags);
-	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
+	innerPlanState(hjstate) = ExecInitNode((Plan *) innerNode, estate, eflags);
 
 	/*
 	 * tuple table initialization
