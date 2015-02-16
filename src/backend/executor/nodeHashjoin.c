@@ -28,7 +28,7 @@
  * States of the ExecHashJoin state machine
  */
 #define HJ_BUILD_HASHTABLE		1
-#define HJ_NEED_NEW_OUTER		2
+#define HJ_NEED_NEW_INNER		2
 #define HJ_SCAN_BUCKET			3
 #define HJ_NEED_NEW_BATCH		6
 
@@ -37,6 +37,8 @@
 /* Returns true if doing null-fill on inner relation */
 #define HJ_FILL_INNER(hjstate)	((hjstate)->hj_NullOuterTupleSlot != NULL)
 
+static TupleTableSlot *ExecHashJoinInnerGetTuple(HashJoinState *hjstate,
+						  uint32 *hashvalue);
 static TupleTableSlot *ExecHashJoinOuterGetTuple(HashJoinState *hjstate,
 						  uint32 *hashvalue);
 
@@ -135,7 +137,7 @@ ExecHashJoin(HashJoinState *node)
         outerNode->hashtable = hashtableOuter;
 
         do {
-          hashSlot = ExecHash(innerNode);
+          hashSlot = ExecHash(outerNode);
         } while (hashSlot != NULL);
 
 
@@ -153,23 +155,23 @@ ExecHashJoin(HashJoinState *node)
 				 */
 				node->hj_OuterNotEmpty = false;
 
-				node->hj_JoinState = HJ_NEED_NEW_OUTER;
+				node->hj_JoinState = HJ_NEED_NEW_INNER;
 
 				/* FALL THRU */
 
-			case HJ_NEED_NEW_OUTER:
+			case HJ_NEED_NEW_INNER:
 
 				/*
 				 * We don't have an outer tuple, try to get the next one
 				 */
-				outerTupleSlot = ExecHashJoinOuterGetTuple(node, &hashvalue);
+				outerTupleSlot = ExecHashJoinInnerGetTuple(node, &hashvalue);
 				if (TupIsNull(outerTupleSlot))
 				{
           node->hj_JoinState = HJ_NEED_NEW_BATCH;
 					continue;
 				}
 
-				econtext->ecxt_outertuple = outerTupleSlot;
+				econtext->ecxt_innertuple = outerTupleSlot;
 				node->hj_MatchedOuter = false;
 
 				/*
@@ -203,7 +205,7 @@ ExecHashJoin(HashJoinState *node)
 				if (!ExecScanHashBucket(node, econtext))
 				{
 					/* out of matches; */
-					node->hj_JoinState = HJ_NEED_NEW_OUTER;
+					node->hj_JoinState = HJ_NEED_NEW_INNER;
 					continue;
 				}
 
@@ -219,30 +221,19 @@ ExecHashJoin(HashJoinState *node)
 				 * Only the joinquals determine tuple match status, but all
 				 * quals must pass to actually return the tuple.
 				 */
-				if (joinqual == NIL || ExecQual(joinqual, econtext, false))
-				{
 					node->hj_MatchedOuter = true;
 					HeapTupleHeaderSetMatch(HJTUPLE_MINTUPLE(node->hj_CurTuple));
 
-					if (otherqual == NIL ||
-						ExecQual(otherqual, econtext, false))
-					{
-						TupleTableSlot *result;
+          TupleTableSlot *result;
 
-						result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
+          result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
 
-						if (isDone != ExprEndResult)
-						{
-							node->js.ps.ps_TupFromTlist =
-								(isDone == ExprMultipleResult);
-							return result;
-						}
-					}
-					else
-						InstrCountFiltered2(node, 1);
-				}
-				else
-					InstrCountFiltered1(node, 1);
+          if (isDone != ExprEndResult)
+          {
+            node->js.ps.ps_TupFromTlist =
+              (isDone == ExprMultipleResult);
+            return result;
+          }
 				break;
 
 			case HJ_NEED_NEW_BATCH:
@@ -364,7 +355,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	 * the hash table.	-cim 6/9/91
 	 */
 	{
-		HashState  *hashstate = (HashState *) innerPlanState(hjstate);
+		HashState  *hashstate = (HashState *) outerPlanState(hjstate);
 		TupleTableSlot *slot = hashstate->ps.ps_ResultTupleSlot;
 
 		hjstate->hj_InnerHashTupleSlot = slot;
@@ -474,6 +465,46 @@ ExecEndHashJoin(HashJoinState *node)
 }
 
 /*
+ * ExecHashJoinInnerGetTuple
+ *		get the next inner tuple for hashjoin
+ */
+static TupleTableSlot *
+ExecHashJoinInnerGetTuple(HashJoinState *hjstate, uint32 *hashvalue)
+{
+  HashState *innerNode = (HashState *)innerPlanState(hjstate);
+	HashJoinTable hashtable = hjstate->hj_OuterHashTable;
+	TupleTableSlot *slot;
+  slot = ExecHash(innerNode);
+
+  while (!TupIsNull(slot))
+  {
+    /*
+     * We have to compute the tuple's hash value.
+     */
+    ExprContext *econtext = hjstate->js.ps.ps_ExprContext;
+
+    econtext->ecxt_outertuple = slot;
+    if (ExecHashGetHashValue(hashtable, econtext,
+                 hjstate->hj_OuterHashKeys,
+                 true,		/* outer tuple */
+                 false,
+                 hashvalue))
+    {
+      return slot;
+    }
+
+    /*
+     * That tuple couldn't match because of a NULL, so discard it and
+     * continue with the next one.
+     */
+    slot = ExecHash(innerNode);
+  }
+
+	/* End of this batch */
+	return NULL;
+}
+
+/*
  * ExecHashJoinOuterGetTuple
  *		get the next outer tuple for hashjoin
  */
@@ -552,7 +583,7 @@ ExecReScanHashJoin(HashJoinState *node)
     node->hj_OuterNotEmpty = false;
 
     /* ExecHashJoin can skip the BUILD_HASHTABLE step */
-    node->hj_JoinState = HJ_NEED_NEW_OUTER;
+    node->hj_JoinState = HJ_NEED_NEW_INNER;
 	}
 
 	/* Always reset intra-tuple state */
