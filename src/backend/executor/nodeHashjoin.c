@@ -30,8 +30,6 @@
 #define HJ_BUILD_HASHTABLE		1
 #define HJ_NEED_NEW_OUTER		2
 #define HJ_SCAN_BUCKET			3
-#define HJ_FILL_OUTER_TUPLE		4
-#define HJ_FILL_INNER_TUPLES	5
 #define HJ_NEED_NEW_BATCH		6
 
 /* Returns true if doing null-fill on outer relation */
@@ -167,15 +165,7 @@ ExecHashJoin(HashJoinState *node)
 				outerTupleSlot = ExecHashJoinOuterGetTuple(node, &hashvalue);
 				if (TupIsNull(outerTupleSlot))
 				{
-					/* end of batch, or maybe whole join */
-					if (HJ_FILL_INNER(node))
-					{
-						/* set up to scan for unmatched inner tuples */
-						ExecPrepHashTableForUnmatched(node);
-						node->hj_JoinState = HJ_FILL_INNER_TUPLES;
-					}
-					else
-						node->hj_JoinState = HJ_NEED_NEW_BATCH;
+          node->hj_JoinState = HJ_NEED_NEW_BATCH;
 					continue;
 				}
 
@@ -187,8 +177,7 @@ ExecHashJoin(HashJoinState *node)
 				 * hash table or skew hash table.
 				 */
 				node->hj_CurHashValue = hashvalue;
-				ExecHashGetBucket(hashtableInner, hashvalue,
-										  &node->hj_CurBucketNo);
+				ExecHashGetBucket(hashtableInner, hashvalue, &node->hj_CurBucketNo);
 				node->hj_CurSkewBucketNo = INVALID_SKEW_BUCKET_NO;
 				node->hj_CurTuple = NULL;
 
@@ -213,8 +202,8 @@ ExecHashJoin(HashJoinState *node)
 				 */
 				if (!ExecScanHashBucket(node, econtext))
 				{
-					/* out of matches; check for possible outer-join fill */
-					node->hj_JoinState = HJ_FILL_OUTER_TUPLE;
+					/* out of matches; */
+					node->hj_JoinState = HJ_NEED_NEW_OUTER;
 					continue;
 				}
 
@@ -235,20 +224,6 @@ ExecHashJoin(HashJoinState *node)
 					node->hj_MatchedOuter = true;
 					HeapTupleHeaderSetMatch(HJTUPLE_MINTUPLE(node->hj_CurTuple));
 
-					/* In an antijoin, we never return a matched tuple */
-					if (node->js.jointype == JOIN_ANTI)
-					{
-						node->hj_JoinState = HJ_NEED_NEW_OUTER;
-						continue;
-					}
-
-					/*
-					 * In a semijoin, we'll consider returning the first
-					 * match, but after that we're done with this outer tuple.
-					 */
-					if (node->js.jointype == JOIN_SEMI)
-						node->hj_JoinState = HJ_NEED_NEW_OUTER;
-
 					if (otherqual == NIL ||
 						ExecQual(otherqual, econtext, false))
 					{
@@ -268,81 +243,6 @@ ExecHashJoin(HashJoinState *node)
 				}
 				else
 					InstrCountFiltered1(node, 1);
-				break;
-
-			case HJ_FILL_OUTER_TUPLE:
-
-				/*
-				 * The current outer tuple has run out of matches, so check
-				 * whether to emit a dummy outer-join tuple.  Whether we emit
-				 * one or not, the next state is NEED_NEW_OUTER.
-				 */
-				node->hj_JoinState = HJ_NEED_NEW_OUTER;
-
-				if (!node->hj_MatchedOuter &&
-					HJ_FILL_OUTER(node))
-				{
-					/*
-					 * Generate a fake join tuple with nulls for the inner
-					 * tuple, and return it if it passes the non-join quals.
-					 */
-					econtext->ecxt_innertuple = node->hj_NullInnerTupleSlot;
-
-					if (otherqual == NIL ||
-						ExecQual(otherqual, econtext, false))
-					{
-						TupleTableSlot *result;
-
-						result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
-
-						if (isDone != ExprEndResult)
-						{
-							node->js.ps.ps_TupFromTlist =
-								(isDone == ExprMultipleResult);
-							return result;
-						}
-					}
-					else
-						InstrCountFiltered2(node, 1);
-				}
-				break;
-
-			case HJ_FILL_INNER_TUPLES:
-
-				/*
-				 * We have finished a batch, but we are doing right/full join,
-				 * so any unmatched inner tuples in the hashtable have to be
-				 * emitted before we continue to the next batch.
-				 */
-				if (!ExecScanHashTableForUnmatched(node, econtext))
-				{
-					/* no more unmatched tuples */
-					node->hj_JoinState = HJ_NEED_NEW_BATCH;
-					continue;
-				}
-
-				/*
-				 * Generate a fake join tuple with nulls for the outer tuple,
-				 * and return it if it passes the non-join quals.
-				 */
-				econtext->ecxt_outertuple = node->hj_NullOuterTupleSlot;
-
-				if (otherqual == NIL ||
-					ExecQual(otherqual, econtext, false))
-				{
-					TupleTableSlot *result;
-
-					result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
-
-					if (isDone != ExprEndResult)
-					{
-						node->js.ps.ps_TupFromTlist =
-							(isDone == ExprMultipleResult);
-						return result;
-					}
-				}
-				else
-					InstrCountFiltered2(node, 1);
 				break;
 
 			case HJ_NEED_NEW_BATCH:
