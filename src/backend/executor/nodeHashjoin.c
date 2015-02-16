@@ -65,6 +65,7 @@ ExecHashJoin(HashJoinState *node)
 	HashJoinTable hashtable;
 	TupleTableSlot *outerTupleSlot;
 	uint32		hashvalue;
+  TupleTableSlot *hashSlot;
 
 	/*
 	 * get information from HashJoin node
@@ -169,7 +170,10 @@ ExecHashJoin(HashJoinState *node)
 				 * execute the Hash node, to build the hash table
 				 */
 				hashNode->hashtable = hashtable;
-				(void) MultiExecProcNode((PlanState *) hashNode);
+
+        do {
+          hashSlot = ExecHash(hashNode);
+        } while (hashSlot != NULL);
 
 				/*
 				 * If the inner relation is completely empty, and we're not

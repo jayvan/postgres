@@ -50,14 +50,74 @@ static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
 /* ----------------------------------------------------------------
  *		ExecHash
  *
- *		stub for pro forma compliance
+ *		CS448: Implemented ExecHash
+ *		Inserts 1 tuple from the wrapped plan into the table and
+ *		returns it.
  * ----------------------------------------------------------------
  */
 TupleTableSlot *
 ExecHash(HashState *node)
 {
-	elog(ERROR, "Hash node does not support ExecProcNode call convention");
-	return NULL;
+	PlanState  *outerNode;
+	List	   *hashkeys;
+	HashJoinTable hashtable;
+	TupleTableSlot *slot;
+	ExprContext *econtext;
+	uint32		hashvalue;
+
+	/* must provide our own instrumentation support */
+	if (node->ps.instrument)
+		InstrStartNode(node->ps.instrument);
+
+	/*
+	 * get state info from node
+	 */
+	outerNode = outerPlanState(node);
+	hashtable = node->hashtable;
+
+	/*
+	 * set expression context
+	 */
+	hashkeys = node->hashkeys;
+	econtext = node->ps.ps_ExprContext;
+
+	/*
+	 * get one inner tuple, insert into the hash table and return
+	 */
+  slot = ExecProcNode(outerNode);
+
+  /* CS448: The outer plan is out of tuples so return nothing */
+  if (TupIsNull(slot))
+    return NULL;
+
+  /* We have to compute the hash value */
+  econtext->ecxt_innertuple = slot;
+  if (ExecHashGetHashValue(hashtable, econtext, hashkeys,
+               false, hashtable->keepNulls,
+               &hashvalue))
+  {
+    int			bucketNumber;
+
+    bucketNumber = ExecHashGetSkewBucket(hashtable, hashvalue);
+    if (bucketNumber != INVALID_SKEW_BUCKET_NO)
+    {
+      /* It's a skew tuple, so put it into that hash table */
+      ExecHashSkewTableInsert(hashtable, slot, hashvalue,
+                  bucketNumber);
+    }
+    else
+    {
+      /* Not subject to skew optimization, so insert normally */
+      ExecHashTableInsert(hashtable, slot, hashvalue);
+    }
+    hashtable->totalTuples += 1;
+  }
+
+	/* must provide our own instrumentation support */
+	if (node->ps.instrument)
+		InstrStopNode(node->ps.instrument, hashtable->totalTuples);
+
+	return slot;
 }
 
 /* ----------------------------------------------------------------
