@@ -39,8 +39,7 @@
 /* Returns true if doing null-fill on inner relation */
 #define HJ_FILL_INNER(hjstate)	((hjstate)->hj_NullOuterTupleSlot != NULL)
 
-static TupleTableSlot *ExecHashJoinOuterGetTuple(HashState *outerNode,
-						  HashJoinState *hjstate,
+static TupleTableSlot *ExecHashJoinOuterGetTuple(HashJoinState *hjstate,
 						  uint32 *hashvalue);
 
 
@@ -164,9 +163,7 @@ ExecHashJoin(HashJoinState *node)
 				/*
 				 * We don't have an outer tuple, try to get the next one
 				 */
-				outerTupleSlot = ExecHashJoinOuterGetTuple(outerNode,
-														   node,
-														   &hashvalue);
+				outerTupleSlot = ExecHashJoinOuterGetTuple(node, &hashvalue);
 				if (TupIsNull(outerTupleSlot))
 				{
 					/* end of batch, or maybe whole join */
@@ -577,21 +574,12 @@ ExecEndHashJoin(HashJoinState *node)
 
 /*
  * ExecHashJoinOuterGetTuple
- *
- *		get the next outer tuple for hashjoin: either by
- *		executing the outer plan node in the first pass, or from
- *		the temp files for the hashjoin batches.
- *
- * Returns a null slot if no more outer tuples (within the current batch).
- *
- * On success, the tuple's hash value is stored at *hashvalue --- this is
- * either originally computed, or re-read from the temp file.
+ *		get the next outer tuple for hashjoin
  */
 static TupleTableSlot *
-ExecHashJoinOuterGetTuple(HashState *outerNode,
-						  HashJoinState *hjstate,
-						  uint32 *hashvalue)
+ExecHashJoinOuterGetTuple(HashJoinState *hjstate, uint32 *hashvalue)
 {
+  PlanState *outerNode = outerPlanState(hjstate);
 	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	TupleTableSlot *slot;
 
