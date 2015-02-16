@@ -1568,7 +1568,7 @@ typedef struct MergeJoinState
  *		hj_OuterHashKeys		the outer hash keys in the hashjoin condition
  *		hj_InnerHashKeys		the inner hash keys in the hashjoin condition
  *		hj_HashOperators		the join operators in the hashjoin condition
- *		hj_HashTable			hash table for the hashjoin
+ *		hj_InnerHashTable			hash table for the hashjoin
  *								(NULL if table not built yet)
  *		hj_CurHashValue			hash value for current outer tuple
  *		hj_CurBucketNo			regular bucket# for current outer tuple
@@ -1599,7 +1599,7 @@ typedef struct HashJoinState
 	List	   *hj_OuterHashKeys;		/* list of ExprState nodes */
 	List	   *hj_InnerHashKeys;		/* list of ExprState nodes */
 	List	   *hj_HashOperators;		/* list of operator OIDs */
-	HashJoinTable hj_HashTable;
+	HashJoinTable hj_InnerHashTable;
 	uint32		hj_CurHashValue;
 	int			hj_CurBucketNo;
 	int			hj_CurSkewBucketNo;

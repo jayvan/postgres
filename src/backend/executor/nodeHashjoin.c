@@ -39,7 +39,7 @@
 /* Returns true if doing null-fill on inner relation */
 #define HJ_FILL_INNER(hjstate)	((hjstate)->hj_NullOuterTupleSlot != NULL)
 
-static TupleTableSlot *ExecHashJoinOuterGetTuple(PlanState *outerNode,
+static TupleTableSlot *ExecHashJoinOuterGetTuple(HashState *outerNode,
 						  HashJoinState *hjstate,
 						  uint32 *hashvalue);
 
@@ -56,7 +56,7 @@ static TupleTableSlot *ExecHashJoinOuterGetTuple(PlanState *outerNode,
 TupleTableSlot *				/* return: a tuple or NULL */
 ExecHashJoin(HashJoinState *node)
 {
-	PlanState  *outerNode;
+	HashState  *outerNode;
 	HashState  *hashNode;
 	List	   *joinqual;
 	List	   *otherqual;
@@ -73,8 +73,8 @@ ExecHashJoin(HashJoinState *node)
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
 	hashNode = (HashState *) innerPlanState(node);
-	outerNode = outerPlanState(node);
-	hashtable = node->hj_HashTable;
+	outerNode = (HashState *) outerPlanState(node);
+	hashtable = node->hj_InnerHashTable;
 	econtext = node->js.ps.ps_ExprContext;
 
 	/*
@@ -113,50 +113,7 @@ ExecHashJoin(HashJoinState *node)
 				 * First time through: build hash table for inner relation.
 				 */
 				Assert(hashtable == NULL);
-
-				/*
-				 * If the outer relation is completely empty, and it's not
-				 * right/full join, we can quit without building the hash
-				 * table.  However, for an inner join it is only a win to
-				 * check this when the outer relation's startup cost is less
-				 * than the projected cost of building the hash table.
-				 * Otherwise it's best to build the hash table first and see
-				 * if the inner relation is empty.	(When it's a left join, we
-				 * should always make this check, since we aren't going to be
-				 * able to skip the join on the strength of an empty inner
-				 * relation anyway.)
-				 *
-				 * If we are rescanning the join, we make use of information
-				 * gained on the previous scan: don't bother to try the
-				 * prefetch if the previous scan found the outer relation
-				 * nonempty. This is not 100% reliable since with new
-				 * parameters the outer relation might yield different
-				 * results, but it's a good heuristic.
-				 *
-				 * The only way to make the check is to try to fetch a tuple
-				 * from the outer plan node.  If we succeed, we have to stash
-				 * it away for later consumption by ExecHashJoinOuterGetTuple.
-				 */
-				if (HJ_FILL_INNER(node))
-				{
-					/* no chance to not build the hash table */
-					node->hj_FirstOuterTupleSlot = NULL;
-				}
-				else if (HJ_FILL_OUTER(node) ||
-						 (outerNode->plan->startup_cost < hashNode->ps.plan->total_cost &&
-						  !node->hj_OuterNotEmpty))
-				{
-					node->hj_FirstOuterTupleSlot = ExecProcNode(outerNode);
-					if (TupIsNull(node->hj_FirstOuterTupleSlot))
-					{
-						node->hj_OuterNotEmpty = false;
-						return NULL;
-					}
-					else
-						node->hj_OuterNotEmpty = true;
-				}
-				else
-					node->hj_FirstOuterTupleSlot = NULL;
+        node->hj_FirstOuterTupleSlot = NULL;
 
 				/*
 				 * create the hash table
@@ -164,7 +121,7 @@ ExecHashJoin(HashJoinState *node)
 				hashtable = ExecHashTableCreate((Hash *) hashNode->ps.plan,
 												node->hj_HashOperators,
 												HJ_FILL_INNER(node));
-				node->hj_HashTable = hashtable;
+				node->hj_InnerHashTable = hashtable;
 
 				/*
 				 * execute the Hash node, to build the hash table
@@ -410,7 +367,7 @@ HashJoinState *
 ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 {
 	HashJoinState *hjstate;
-	Plan	   *outerNode;
+  Hash     *outerNode;
 	Hash	   *hashNode;
 	List	   *lclauses;
 	List	   *rclauses;
@@ -458,10 +415,10 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	 * would amount to betting that the hash will be a single batch.  Not
 	 * clear if this would be a win or not.
 	 */
-	outerNode = outerPlan(node);
+	outerNode =(Hash *) outerPlan(node);
 	hashNode = (Hash *) innerPlan(node);
 
-	outerPlanState(hjstate) = ExecInitNode(outerNode, estate, eflags);
+	innerPlanState(hjstate) = ExecInitNode((Plan *) outerNode, estate, eflags);
 	innerPlanState(hjstate) = ExecInitNode((Plan *) hashNode, estate, eflags);
 
 	/*
@@ -526,7 +483,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	/*
 	 * initialize hash-specific info
 	 */
-	hjstate->hj_HashTable = NULL;
+	hjstate->hj_InnerHashTable = NULL;
 	hjstate->hj_FirstOuterTupleSlot = NULL;
 
 	hjstate->hj_CurHashValue = 0;
@@ -581,10 +538,10 @@ ExecEndHashJoin(HashJoinState *node)
 	/*
 	 * Free hash table
 	 */
-	if (node->hj_HashTable)
+	if (node->hj_InnerHashTable)
 	{
-		ExecHashTableDestroy(node->hj_HashTable);
-		node->hj_HashTable = NULL;
+		ExecHashTableDestroy(node->hj_InnerHashTable);
+		node->hj_InnerHashTable = NULL;
 	}
 
 	/*
@@ -619,11 +576,11 @@ ExecEndHashJoin(HashJoinState *node)
  * either originally computed, or re-read from the temp file.
  */
 static TupleTableSlot *
-ExecHashJoinOuterGetTuple(PlanState *outerNode,
+ExecHashJoinOuterGetTuple(HashState *outerNode,
 						  HashJoinState *hjstate,
 						  uint32 *hashvalue)
 {
-	HashJoinTable hashtable = hjstate->hj_HashTable;
+	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	TupleTableSlot *slot;
 
   // CS448: It's always the right batch (batching removed)
@@ -635,7 +592,7 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
   if (!TupIsNull(slot))
     hjstate->hj_FirstOuterTupleSlot = NULL;
   else
-    slot = ExecProcNode(outerNode);
+    slot = ExecHash(outerNode);
 
   while (!TupIsNull(slot))
   {
@@ -661,7 +618,7 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
      * That tuple couldn't match because of a NULL, so discard it and
      * continue with the next one.
      */
-    slot = ExecProcNode(outerNode);
+    slot = ExecHash(outerNode);
   }
 
 	/* End of this batch */
@@ -684,7 +641,7 @@ ExecReScanHashJoin(HashJoinState *node)
 	 * inner subnode, then we can just re-use the existing hash table without
 	 * rebuilding it.
 	 */
-	if (node->hj_HashTable != NULL)
+	if (node->hj_InnerHashTable != NULL)
 	{
     /*
      * Okay to reuse the hash table; needn't rescan inner, either.
@@ -693,7 +650,7 @@ ExecReScanHashJoin(HashJoinState *node)
      * inner-tuple match flags contained in the table.
      */
     if (HJ_FILL_INNER(node))
-      ExecHashTableResetMatchFlags(node->hj_HashTable);
+      ExecHashTableResetMatchFlags(node->hj_InnerHashTable);
 
     /*
      * Also, we need to reset our state about the emptiness of the

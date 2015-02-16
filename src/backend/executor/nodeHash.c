@@ -58,6 +58,7 @@ static void ExecHashRemoveNextSkewBucket(HashJoinTable hashtable);
 TupleTableSlot *
 ExecHash(HashState *node)
 {
+  elog(NOTICE, "CS448: Calling execHash %d", node);
 	PlanState  *outerNode;
 	List	   *hashkeys;
 	HashJoinTable hashtable;
@@ -734,7 +735,7 @@ ExecScanHashBucket(HashJoinState *hjstate,
 				   ExprContext *econtext)
 {
 	List	   *hjclauses = hjstate->hashclauses;
-	HashJoinTable hashtable = hjstate->hj_HashTable;
+	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
 	uint32		hashvalue = hjstate->hj_CurHashValue;
 
@@ -813,7 +814,7 @@ ExecPrepHashTableForUnmatched(HashJoinState *hjstate)
 bool
 ExecScanHashTableForUnmatched(HashJoinState *hjstate, ExprContext *econtext)
 {
-	HashJoinTable hashtable = hjstate->hj_HashTable;
+	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
 
 	for (;;)
