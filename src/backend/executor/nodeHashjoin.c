@@ -143,10 +143,6 @@ ExecHashJoin(HashJoinState *node)
 				hashtableInner->nbatch_outstart = hashtableInner->nbatch;
 				hashtableOuter->nbatch_outstart = hashtableOuter->nbatch;
 
-        do {
-          hashSlot = ExecHash(outerNode);
-        } while (hashSlot != NULL);
-
 				/*
 				 * Reset OuterNotEmpty for scan.  (It's OK if we fetched a
 				 * tuple above, because ExecHashJoinOuterGetTuple will
@@ -159,6 +155,9 @@ ExecHashJoin(HashJoinState *node)
 				/* FALL THRU */
 
 			case HJ_NEED_NEW_TUPLE:
+        if (!node->hj_OneDone) {
+          node->hj_PullInner = !node->hj_PullInner;
+        }
 
 				/*
 				 * We don't have an outer tuple, try to get the next one
@@ -194,8 +193,6 @@ ExecHashJoin(HashJoinState *node)
 				/* FALL THRU */
 
 			case HJ_SCAN_BUCKET:
-
-
         /*
          * now for some voodoo.  our temporary tuple slot is actually the result
          * tuple slot of the Hash node (which is our inner plan).  we can do this
@@ -260,7 +257,14 @@ ExecHashJoin(HashJoinState *node)
 				break;
 
 			case HJ_NEED_NEW_BATCH:
-        return NULL;	/* end of join */
+        if (node->hj_OneDone) {
+          return NULL;
+        } else {
+          node->hj_PullInner = !node->hj_PullInner;
+          node->hj_JoinState = HJ_NEED_NEW_TUPLE;
+          node->hj_OneDone = true;
+          continue;
+        }
 				break;
 
 			default:
@@ -424,6 +428,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->hj_MatchedOuter = false;
 	hjstate->hj_OuterNotEmpty = false;
   hjstate->hj_PullInner = true;
+  hjstate->hj_OneDone = false;
 
 	return hjstate;
 }

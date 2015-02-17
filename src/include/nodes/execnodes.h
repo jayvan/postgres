@@ -1614,6 +1614,7 @@ typedef struct HashJoinState
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
   bool    hj_PullInner;
+  bool    hj_OneDone;
 } HashJoinState;
 
 
