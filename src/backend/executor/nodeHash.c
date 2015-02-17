@@ -705,9 +705,15 @@ ExecScanHashBucket(HashJoinState *hjstate,
 				   ExprContext *econtext)
 {
 	List	   *hjclauses = hjstate->hashclauses;
-	HashJoinTable hashtable = hjstate->hj_OuterHashTable;
+	HashJoinTable hashtable;
 	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
 	uint32		hashvalue = hjstate->hj_CurHashValue;
+
+
+  if (hjstate->hj_PullInner)
+    hashtable = hjstate->hj_OuterHashTable;
+  else
+    hashtable = hjstate->hj_InnerHashTable;
 
 
 	/*
@@ -734,13 +740,19 @@ ExecScanHashBucket(HashJoinState *hjstate,
 			inntuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
 											 hjstate->hj_InnerHashTupleSlot,
 											 false);	/* do not pfree */
-			econtext->ecxt_outertuple = inntuple;
+      if (hjstate->hj_PullInner)
+        econtext->ecxt_outertuple = inntuple;
+      else
+        econtext->ecxt_innertuple = inntuple;
 
 			/* reset temp memory each time to avoid leaks from qual expr */
 			ResetExprContext(econtext);
 
-      hjstate->hj_CurTuple = hashTuple;
-      return true;
+      if (ExecQual(hjclauses, econtext, false))
+      {
+        hjstate->hj_CurTuple = hashTuple;
+        return true;
+      }
 		}
 
 		hashTuple = hashTuple->next;

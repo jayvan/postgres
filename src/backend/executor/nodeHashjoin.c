@@ -28,7 +28,7 @@
  * States of the ExecHashJoin state machine
  */
 #define HJ_BUILD_HASHTABLE		1
-#define HJ_NEED_NEW_INNER		2
+#define HJ_NEED_NEW_TUPLE		2
 #define HJ_SCAN_BUCKET			3
 #define HJ_NEED_NEW_BATCH		6
 
@@ -136,17 +136,16 @@ ExecHashJoin(HashJoinState *node)
 				innerNode->hashtable = hashtableInner;
         outerNode->hashtable = hashtableOuter;
 
-        do {
-          hashSlot = ExecHash(outerNode);
-        } while (hashSlot != NULL);
-
-
 				/*
 				 * need to remember whether nbatch has increased since we
 				 * began scanning the outer relation
 				 */
 				hashtableInner->nbatch_outstart = hashtableInner->nbatch;
 				hashtableOuter->nbatch_outstart = hashtableOuter->nbatch;
+
+        do {
+          hashSlot = ExecHash(outerNode);
+        } while (hashSlot != NULL);
 
 				/*
 				 * Reset OuterNotEmpty for scan.  (It's OK if we fetched a
@@ -155,16 +154,20 @@ ExecHashJoin(HashJoinState *node)
 				 */
 				node->hj_OuterNotEmpty = false;
 
-				node->hj_JoinState = HJ_NEED_NEW_INNER;
+				node->hj_JoinState = HJ_NEED_NEW_TUPLE;
 
 				/* FALL THRU */
 
-			case HJ_NEED_NEW_INNER:
+			case HJ_NEED_NEW_TUPLE:
 
 				/*
 				 * We don't have an outer tuple, try to get the next one
 				 */
-				outerTupleSlot = ExecHashJoinInnerGetTuple(node, &hashvalue);
+        if (node->hj_PullInner)
+          outerTupleSlot = ExecHashJoinInnerGetTuple(node, &hashvalue);
+        else
+          outerTupleSlot = ExecHashJoinOuterGetTuple(node, &hashvalue);
+
 				if (TupIsNull(outerTupleSlot))
 				{
           node->hj_JoinState = HJ_NEED_NEW_BATCH;
@@ -192,6 +195,26 @@ ExecHashJoin(HashJoinState *node)
 
 			case HJ_SCAN_BUCKET:
 
+
+        /*
+         * now for some voodoo.  our temporary tuple slot is actually the result
+         * tuple slot of the Hash node (which is our inner plan).  we can do this
+         * because Hash nodes don't return tuples via ExecProcNode() -- instead
+         * the hash join node uses ExecScanHashBucket() to get at the contents of
+         * the hash table.	-cim 6/9/91
+         */
+        {
+          HashState *hashstate;
+          if (node->hj_PullInner)
+            hashstate = (HashState *) outerPlanState(node);
+          else
+            hashstate = (HashState *) innerPlanState(node);
+
+          TupleTableSlot *slot = hashstate->ps.ps_ResultTupleSlot;
+
+          node->hj_InnerHashTupleSlot = slot;
+        }
+
 				/*
 				 * We check for interrupts here because this corresponds to
 				 * where we'd fetch a row from a child plan node in other join
@@ -205,7 +228,7 @@ ExecHashJoin(HashJoinState *node)
 				if (!ExecScanHashBucket(node, econtext))
 				{
 					/* out of matches; */
-					node->hj_JoinState = HJ_NEED_NEW_INNER;
+					node->hj_JoinState = HJ_NEED_NEW_TUPLE;
 					continue;
 				}
 
@@ -348,20 +371,6 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	}
 
 	/*
-	 * now for some voodoo.  our temporary tuple slot is actually the result
-	 * tuple slot of the Hash node (which is our inner plan).  we can do this
-	 * because Hash nodes don't return tuples via ExecProcNode() -- instead
-	 * the hash join node uses ExecScanHashBucket() to get at the contents of
-	 * the hash table.	-cim 6/9/91
-	 */
-	{
-		HashState  *hashstate = (HashState *) outerPlanState(hjstate);
-		TupleTableSlot *slot = hashstate->ps.ps_ResultTupleSlot;
-
-		hjstate->hj_InnerHashTupleSlot = slot;
-	}
-
-	/*
 	 * initialize tuple type and projection info
 	 */
 	ExecAssignResultTypeFromTL(&hjstate->js.ps);
@@ -414,6 +423,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 	hjstate->hj_JoinState = HJ_BUILD_HASHTABLE;
 	hjstate->hj_MatchedOuter = false;
 	hjstate->hj_OuterNotEmpty = false;
+  hjstate->hj_PullInner = true;
 
 	return hjstate;
 }
@@ -583,7 +593,7 @@ ExecReScanHashJoin(HashJoinState *node)
     node->hj_OuterNotEmpty = false;
 
     /* ExecHashJoin can skip the BUILD_HASHTABLE step */
-    node->hj_JoinState = HJ_NEED_NEW_INNER;
+    node->hj_JoinState = HJ_NEED_NEW_TUPLE;
 	}
 
 	/* Always reset intra-tuple state */
