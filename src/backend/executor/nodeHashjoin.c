@@ -30,7 +30,7 @@
 #define HJ_BUILD_HASHTABLE		1
 #define HJ_NEED_NEW_TUPLE		2
 #define HJ_SCAN_BUCKET			3
-#define HJ_NEED_NEW_BATCH		6
+#define HJ_DONE_SOURCE		6
 
 /* Returns true if doing null-fill on outer relation */
 #define HJ_FILL_OUTER(hjstate)	((hjstate)->hj_NullInnerTupleSlot != NULL)
@@ -108,6 +108,8 @@ ExecHashJoin(HashJoinState *node)
 	{
 		switch (node->hj_JoinState)
 		{
+      // CS448: This stage builds a hashtable for both the inner/outer nodes
+      // but does not populate them like the original hash join
 			case HJ_BUILD_HASHTABLE:
 
 				/*
@@ -154,6 +156,10 @@ ExecHashJoin(HashJoinState *node)
 
 				/* FALL THRU */
 
+      // CS448: This stage switches the node we're pulling from,
+      // then pulls, and checks the other hash table
+      // Of course, we don't switch nodes if the other is
+      // exhausted
 			case HJ_NEED_NEW_TUPLE:
         if (!node->hj_OneDone) {
           node->hj_PullInner = !node->hj_PullInner;
@@ -169,7 +175,7 @@ ExecHashJoin(HashJoinState *node)
 
 				if (TupIsNull(outerTupleSlot))
 				{
-          node->hj_JoinState = HJ_NEED_NEW_BATCH;
+          node->hj_JoinState = HJ_DONE_SOURCE;
 					continue;
 				}
 
@@ -194,11 +200,8 @@ ExecHashJoin(HashJoinState *node)
 
 			case HJ_SCAN_BUCKET:
         /*
-         * now for some voodoo.  our temporary tuple slot is actually the result
-         * tuple slot of the Hash node (which is our inner plan).  we can do this
-         * because Hash nodes don't return tuples via ExecProcNode() -- instead
-         * the hash join node uses ExecScanHashBucket() to get at the contents of
-         * the hash table.	-cim 6/9/91
+         * CS448: I moved the voodoo. I don't entirely understand the voodoo,
+         * it was crafted before I was even born. I embraced the vodooo. It works
          */
         {
           HashState *hashstate;
@@ -266,7 +269,7 @@ ExecHashJoin(HashJoinState *node)
           InstrCountFiltered1(node, 1);
 				break;
 
-			case HJ_NEED_NEW_BATCH:
+			case HJ_DONE_SOURCE:
         if (node->hj_OneDone) {
           return NULL;
         } else {
@@ -490,6 +493,7 @@ ExecEndHashJoin(HashJoinState *node)
 }
 
 /*
+ * CS448: Like ExecHashJoinOuterGetTuple, but for the inner
  * ExecHashJoinInnerGetTuple
  *		get the next inner tuple for hashjoin
  */

@@ -1613,6 +1613,8 @@ typedef struct HashJoinState
 	int			hj_JoinState;
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
+  // CS448: Added PullInner (true when pulling from inner next, false otherwise)
+  // and OneDone (true when one of the sources is exhausted)
   bool    hj_PullInner;
   bool    hj_OneDone;
 } HashJoinState;

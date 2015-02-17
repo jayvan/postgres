@@ -2512,6 +2512,7 @@ create_hashjoin_plan(PlannerInfo *root,
 	/*
 	 * Build the hash node and hash join node.
 	 */
+  // CS448: Now the inner is a hash node as well
 	inner_hash_plan = make_hash(inner_plan,
 						  skewTable,
 						  skewColumn,

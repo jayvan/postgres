@@ -710,6 +710,7 @@ ExecScanHashBucket(HashJoinState *hjstate,
 	uint32		hashvalue = hjstate->hj_CurHashValue;
 
 
+  // CS448: We now switch which hashtable we need to pull from
   if (hjstate->hj_PullInner)
     hashtable = hjstate->hj_OuterHashTable;
   else
@@ -740,6 +741,10 @@ ExecScanHashBucket(HashJoinState *hjstate,
 			inntuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
 											 hjstate->hj_InnerHashTupleSlot,
 											 false);	/* do not pfree */
+
+      // CS448: One of the more complex parts of the modification
+      // We need to make sure that the pulled tuple ends up on the correct
+      // side of the econtent for the equality checks
       if (hjstate->hj_PullInner)
         econtext->ecxt_outertuple = inntuple;
       else
