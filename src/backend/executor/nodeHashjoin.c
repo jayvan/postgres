@@ -241,19 +241,29 @@ ExecHashJoin(HashJoinState *node)
 				 * Only the joinquals determine tuple match status, but all
 				 * quals must pass to actually return the tuple.
 				 */
+        if (joinqual == NIL || ExecQual(joinqual, econtext, false))
+        {
 					node->hj_MatchedOuter = true;
 					HeapTupleHeaderSetMatch(HJTUPLE_MINTUPLE(node->hj_CurTuple));
 
-          TupleTableSlot *result;
-
-          result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
-
-          if (isDone != ExprEndResult)
+          if (otherqual == NIL || ExecQual(otherqual, econtext, false))
           {
-            node->js.ps.ps_TupFromTlist =
-              (isDone == ExprMultipleResult);
-            return result;
+            TupleTableSlot *result;
+
+            result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
+
+            if (isDone != ExprEndResult)
+            {
+              node->js.ps.ps_TupFromTlist =
+                (isDone == ExprMultipleResult);
+              return result;
+            }
           }
+          else
+            InstrCountFiltered2(node, 1);
+        }
+        else
+          InstrCountFiltered1(node, 1);
 				break;
 
 			case HJ_NEED_NEW_BATCH:
